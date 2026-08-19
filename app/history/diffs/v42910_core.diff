@@ -1,0 +1,559 @@
+--- /mnt/data/ebam_v4299_input/EBAM_Gcode_Studio_v4_2_9_9_WINDOWS_EXPERIENCE_PROFILE_MERGE/ebam_gcode_studio/core.py	2026-07-09 14:49:20.000000000 +0000
++++ /mnt/data/EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/ebam_gcode_studio/core.py	2026-07-10 09:52:40.675638230 +0000
+@@ -1,4 +1,4 @@
+-"""EBAM G-code Studio core v4.2.9.9.
++"""EBAM G-code Studio core v4.2.9.10.
+ 
+ STL/DXF/CSV -> layer slicing -> EBAM-oriented G-code.
+ Designed for Bormash/FABMETALL-style electron-beam wire deposition.
+@@ -29,6 +29,9 @@
+ Point = Tuple[float, float]
+ Segment = Tuple[float, float, float, float]
+ 
++APP_VERSION = "v4.2.9.10"
++EXPERIENCE_PROFILE_VERSION = "v4.2.9.10-experience-profile"
++
+ 
+ BORMASH_LIMITS = {
+     "x_min": 0.0, "x_max": 3670.0,
+@@ -265,8 +268,18 @@
+     layer_pause_bottom_s: float = 0.10
+     layer_pause_top_s: float = 0.45
+ 
+-    # Output/safety
++    # Output/safety and controller semantics
++    # path_control_mode: g64_tolerance / machine_default / g61 / g61_1.
++    # Q=0 explicitly disables LinuxCNC naive-CAM segment collapsing.
++    path_control_mode: str = "g64_tolerance"
+     g64_tolerance_mm: float = 0.08
++    g64_naive_cam_q_mm: float = 0.0
++    # Analog output mode is machine-specific. The Bormash-compatible default remains M68.
++    # M67 is enabled only after the operator confirms HAL support.
++    analog_output_mode: str = "m68_compatible"  # m68_compatible / m67_synchronized
++    machine_m67_confirmed: bool = False
++    # No-pause fixed-X modes are only geometrically valid for near-constant radius walls.
++    rotary_c_radius_variation_tolerance_mm: float = 0.05
+     safe_z_final_mm: float = 110.0
+     rapid_feed_z_mm_min: float = 900.0
+     work_z_feed_mm_min: float = 240.0
+@@ -963,7 +976,7 @@
+     audit = audit_gcode(gcode, effective_settings)
+     out_stats = dict(stats)
+     out_stats.update({
+-        "app_version": "v4.2.9.9",
++        "app_version": APP_VERSION,
+         "source_type": "STL rotary C-table",
+         "rotational_path_strategy": "stl_rotary_c_rings",
+         "rotary_c_mode": "B_fixed_C_axis_rings_from_STL",
+@@ -1158,6 +1171,7 @@
+     e0_code_ma: float,
+     voltage_kv: float,
+     wire_diameter_mm: float,
++    deposition_efficiency: float = 1.0,
+     actual_height_mm: float = 0.0,
+     outer_diameter_mm: float = 0.0,
+     inner_diameter_mm: float = 0.0,
+@@ -1188,6 +1202,7 @@
+     e0_code = max(_safe_float(e0_code_ma, 0.0), 0.0)
+     u = max(_safe_float(voltage_kv, 60.0), 1e-9)
+     d = max(_safe_float(wire_diameter_mm, 1.2), 1e-9)
++    eta = min(max(_safe_float(deposition_efficiency, 1.0), 1e-6), 1.0)
+     target_wall = max(_safe_float(target_wall_mm, 4.0), 0.1)
+     actual_wall = _experience_wall_from_od_id(outer_diameter_mm, inner_diameter_mm, measured_wall_mm)
+     problem_h = _safe_float(problem_start_height_mm, 0.0)
+@@ -1209,9 +1224,9 @@
+         z_upper = max(0.10, z0 - z_offset_abs / zone_layers)
+         if z_upper < z0 * 0.75:
+             warnings.append(f"Z offset correction is large: Z-step after {problem_h:.1f} mm becomes {z_upper:.3f} mm. Check with TEST first.")
+-    e2_target_stable = _wire_for_target_wall(target_wall, z0, f_stable, d)
++    e2_target_stable = _wire_for_target_wall(target_wall, z0, f_stable, d, eta)
+     # Important: calculate upper-zone E2 with the corrected upper Z-step, otherwise the wall becomes too thick when Z-step is reduced.
+-    e2_target_upper = _wire_for_target_wall(target_wall, z_upper, f_upper, d)
++    e2_target_upper = _wire_for_target_wall(target_wall, z_upper, f_upper, d, eta)
+     capture_min = max(_safe_float(capture_wire_min_mm_s, 0.0), 0.0)
+     too_thick = actual_wall > 0 and actual_wall > target_wall * 1.30
+     if too_thick:
+@@ -1267,7 +1282,7 @@
+     # Drop empty zones but keep order.
+     zones = [z for z in zones if float(z["z_to_mm"]) > float(z["z_from_mm"]) + 1e-9]
+     for z in zones:
+-        qmetal = (math.pi * d * d / 4.0) * max(float(z["wire_mm_s"]), 0.0)
++        qmetal = (math.pi * d * d / 4.0) * max(float(z["wire_mm_s"]), 0.0) * eta
+         f = max(float(z["linear_feed_mm_min"]) / 60.0, 1e-9)
+         apath = qmetal / f
+         wall_est = apath / max(float(z["z_step_mm"]), 1e-9)
+@@ -1277,7 +1292,7 @@
+         z["energy_j_mm"] = round(pwr / f, 3)
+         z["energy_j_mm3"] = round(pwr / max(qmetal, 1e-9), 3) if qmetal > 0 else None
+     profile = {
+-        "profile_version": "v4.2.9.9-experience-profile",
++        "profile_version": EXPERIENCE_PROFILE_VERSION,
+         "source": {
+             "program_height_mm": round(h, 3),
+             "base_z_step_mm": round(z0, 3),
+@@ -1287,6 +1302,7 @@
+             "e0_code_ma": round(e0_code, 3),
+             "voltage_kv": round(u, 3),
+             "wire_diameter_mm": round(d, 3),
++            "deposition_efficiency": round(eta, 6),
+         },
+         "measurements": {
+             "actual_height_mm": round(_safe_float(actual_height_mm, 0.0), 3),
+@@ -1311,7 +1327,7 @@
+             "do_not_copy_wire_blindly_if_wall_above_target_ratio": 1.30,
+             "too_thick_guard_triggered": bool(too_thick),
+             "test_height_mm": round(max(1.0, _safe_float(test_height_mm, 20.0)), 3),
+-            "recommended_first_run": "Generate TEST 20-30 mm, machine overrides 100%, dry run first.",
++            "recommended_first_run": "Generate TEST 20-30 mm and dry-run first. For calibrated comparison, keep external WIRE override at 100%; the program does not disable operator overrides.",
+         },
+         "zones": zones,
+         "warnings": warnings,
+@@ -1383,7 +1399,7 @@
+     wire = max(0.0, _safe_float(wire_mm_s, layer.wire_mm_s)) if wire_mm_s is not None else layer.wire_mm_s
+     current = max(0.0, _safe_float(current_ma, layer.current_ma)) if current_ma is not None else layer.current_ma
+     travel = max(float(layer.feed_mm_min) / 60.0, 1e-9)
+-    qmetal = settings.wire_area_mm2() * max(wire, 0.0)
++    qmetal = settings.wire_area_mm2() * max(wire, 0.0) * float(settings.deposition_efficiency)
+     pwr = float(settings.voltage_kv) * current
+     e_actual = pwr / travel
+     e_vol = pwr / qmetal if qmetal > 0 else float("inf")
+@@ -1409,7 +1425,7 @@
+     travel = f / 60.0
+     area = settings.wire_area_mm2()
+     wire = _wire_for_layer_ratio(settings, f, ratio)
+-    qmetal = area * wire
++    qmetal = area * wire * float(settings.deposition_efficiency)
+     p = settings.voltage_kv * current
+     e_actual = p / max(travel, 1e-9)
+     e_vol = p / qmetal if qmetal > 0 else float("inf")
+@@ -1510,7 +1526,15 @@
+     warnings: List[str] = [
+         "Experimental fixed-Z no-pause rotary C mode: E0/E2 remain ON, C does not stop between rings, Z rises during a short C+Z transition sector.",
+         "This mode must be dry-run tested on the real Bormash controller because blended C+Z feed interpretation can be controller-specific.",
++        "External feed/current/wire overrides are not changed by the generated program; operator adjustment remains available.",
+     ]
++    path_mode = str(getattr(effective_settings, "path_control_mode", "g64_tolerance")).strip().lower()
++    if path_mode in ("g61", "g61_1", "g61.1"):
++        warnings.append("WARNING: G61/G61.1 can slow or stop at segment boundaries and conflicts with the no-pause objective.")
++    if float(getattr(effective_settings, "g64_naive_cam_q_mm", 0.0)) > 0.0:
++        warnings.append("WARNING: G64 Q>0 enables naive-CAM collapsing; verify that short C+Z transitions are not simplified by the controller.")
++    if float(getattr(effective_settings, "deposition_efficiency", 1.0)) >= 0.999999:
++        warnings.append("CALIBRATION NOTE: deposition efficiency eta=1.0 is an uncalibrated upper bound; measure bead/wall geometry before relying on absolute E2 predictions.")
+     if transition_deg == 0.0 and n_layers > 1:
+         warnings.append("WARNING: transition angle is 0; Z transition may force C stop. Use 10...30 deg for no-pause C motion.")
+     if experience_profile:
+@@ -1518,7 +1542,7 @@
+         for msg in experience_profile.get("warnings", []) or []:
+             warnings.append("EXPERIENCE WARNING: " + str(msg))
+         if not bool(getattr(effective_settings, "experience_profile_update_m68_at_zone_boundaries", False)) and (bool(getattr(effective_settings, "experience_profile_apply_wire", True)) or bool(getattr(effective_settings, "experience_profile_apply_current", False))):
+-            warnings.append("EXPERIENCE NOTE: no-pause G-code keeps E0/E2 ON once; zone E0/E2 values are converted to one weighted command to avoid M68 micro-pauses.")
++            warnings.append("EXPERIENCE NOTE: zone E0/E2 values are averaged unless boundary updates are enabled; synchronized M67 is available only after HAL confirmation.")
+     lines = _gcode_header(effective_settings, stats)
+     lines.append(f"(ROTATIONAL_SPECIAL_PATH: rotary_c_fixed_z_no_pause; radial_step={_fmt(radial_step,3)} mm; one C ring per layer; continuous E0/E2)")
+     z_mode_note = "zone Z-step from experience profile" if experience_profile and bool(getattr(effective_settings, "experience_profile_apply_z_step", True)) else f"Z+{_fmt(effective_settings.layer_height,3)}"
+@@ -1595,34 +1619,75 @@
+         total_active_len += layer.path_length_mm
+     if not layer_infos:
+         raise RuntimeError("No no-pause rotary C layers were generated. Check vessel geometry and height.")
+-    # For no-stop motion, avoid M68 updates inside the movement queue. Use one representative setpoint.
++
++    # Industrial safety guard: fixed-X no-pause rings cannot reproduce a bowl/balloon
++    # whose radius changes with Z. Earlier versions only wrote a warning and then kept
++    # X fixed, which silently produced the wrong geometry.
++    radius_span = max(radii_used) - min(radii_used)
++    radius_tol = max(0.0, float(getattr(effective_settings, "rotary_c_radius_variation_tolerance_mm", 0.05)))
++    if radius_span > radius_tol + 1e-9:
++        raise RuntimeError(
++            f"No-pause fixed-X C mode is valid only for a near-constant-radius wall: "
++            f"radius span is {radius_span:.3f} mm, tolerance is {radius_tol:.3f} mm. "
++            "Use separate C rings with X repositioning, or generate a true synchronized X+C+Z path after machine validation."
++        )
++
+     current_q = sum(li.current_ma for li in layer_infos) / max(len(layer_infos), 1)
+     wire_q = sum(li.wire_mm_s for li in layer_infos) / max(len(layer_infos), 1)
++    zone_updates = bool(
++        experience_profile
++        and getattr(effective_settings, "experience_profile_update_m68_at_zone_boundaries", False)
++        and (getattr(effective_settings, "experience_profile_apply_wire", True) or getattr(effective_settings, "experience_profile_apply_current", False))
++    )
++    analog_code = _deposition_analog_code(effective_settings)
++    if str(getattr(effective_settings, "analog_output_mode", "m68_compatible")).lower() == "m67_synchronized" and analog_code != "M67":
++        warnings.append("M67 was requested but machine/HAL confirmation is off; generator safely fell back to M68.")
++    if zone_updates and analog_code == "M68":
++        warnings.append("Zone E0/E2 updates use M68: LinuxCNC documents that M68 is immediate and breaks blending. Dry-run the zone boundaries.")
++    if zone_updates and analog_code == "M67":
++        warnings.append("Zone E0/E2 updates use synchronized M67 and are applied at the start of the next ring motion.")
++
+     first_r = radii_used[0]
+     x_pos = float(effective_settings.rotary_c_center_x_mm) + float(first_r)
+     y_pos = float(effective_settings.rotary_c_center_y_mm)
+     lines.append(f"G0 X{_fmt(x_pos,3)} Y{_fmt(y_pos,3)}")
+     lines.append(f"G1 Z{_fmt(layer_infos[0].z,3)} F{_fmt(effective_settings.work_z_feed_mm_min,1)}")
+-    lines.append(f"M68 E0 Q{_fmt(current_q,3)} (beam current ON once; average of requested profile)")
+-    lines.append(f"M68 E2 Q{_fmt(wire_q,3)} (wire feed ON once; no off between rings)")
++    lines.append(f"(ANALOG_OUTPUT_MODE: requested={getattr(effective_settings, 'analog_output_mode', 'm68_compatible')}; effective={analog_code}; HAL_M67_confirmed={bool(getattr(effective_settings, 'machine_m67_confirmed', False))})")
++
++    last_output_pair = None
++    if not zone_updates:
++        # Keep the one-time start commands outside the continuous G91 motion block.
++        # With M67 they remain queued until the first following G1 motion.
++        lines.append(_analog_setpoint_line(effective_settings, 0, current_q, "beam current ON once; representative profile value"))
++        lines.append(_analog_setpoint_line(effective_settings, 2, wire_q, "wire feed ON once; no off between rings"))
++        last_output_pair = (round(current_q, 9), round(wire_q, 9))
++
+     lines.append("G91 (continuous relative C/Z block sequence)")
+     for i, layer in enumerate(layer_infos):
+         radius = radii_used[i]
+         c_feed = cfeeds_used[i]
+         x_here = float(effective_settings.rotary_c_center_x_mm) + float(radius)
+-        # X changes during a true cylinder should be zero. If radius changes, we cannot keep no-stop C perfectly.
+         if i == 0:
+             lines.append(f"(START_RADIUS R={_fmt(radius,3)} X={_fmt(x_here,3)} Z={_fmt(layer.z,3)})")
+-        elif abs(radius - radii_used[i-1]) > 1e-6:
+-            lines.append(f"(WARNING_RADIUS_CHANGE L{layer.index}: previous R={_fmt(radii_used[i-1],3)} now R={_fmt(radius,3)}; X is not moved inside no-pause mode)")
+         zone = _experience_zone_for_z(experience_profile, layer.z, height)
+         zone_txt = f" zone={zone.get('name')}" if zone else ""
+-        lines.append(f"(FIXED_Z_NO_PAUSE_RING L{layer.index}/{len(layer_infos)} Z={_fmt(layer.z,3)} R={_fmt(radius,3)} linearF={_fmt(layer.feed_mm_min,1)}mm/min Cfeed={_fmt(c_feed,1)}deg/min E0_avg={_fmt(current_q,3)}mA E2_avg={_fmt(wire_q,3)}mm/s{zone_txt})")
++
++        commanded_current = layer.current_ma if zone_updates and bool(getattr(effective_settings, "experience_profile_apply_current", False)) else current_q
++        commanded_wire = layer.wire_mm_s if zone_updates and bool(getattr(effective_settings, "experience_profile_apply_wire", True)) else wire_q
++        output_pair = (round(commanded_current, 9), round(commanded_wire, 9))
++        if zone_updates and output_pair != last_output_pair:
++            lines.append(_analog_setpoint_line(effective_settings, 0, commanded_current, f"zone setpoint before ring {layer.index}"))
++            lines.append(_analog_setpoint_line(effective_settings, 2, commanded_wire, f"zone setpoint before ring {layer.index}"))
++            last_output_pair = output_pair
++
++        lines.append(f"(FIXED_Z_NO_PAUSE_RING L{layer.index}/{len(layer_infos)} Z={_fmt(layer.z,3)} R={_fmt(radius,3)} linearF={_fmt(layer.feed_mm_min,1)}mm/min Cfeed={_fmt(c_feed,1)}deg/min E0cmd={_fmt(commanded_current,3)}mA E2cmd={_fmt(commanded_wire,3)}mm/s{zone_txt})")
+         lines.append(f"G1 C{_fmt(turn,3)} F{_fmt(c_feed,1)}")
+         if i < len(layer_infos) - 1:
+             dz = max(0.0, float(layer_infos[i+1].z) - float(layer.z))
+             lines.append(f"G1 C{_fmt(transition_deg,3)} Z{_fmt(dz,3)} F{_fmt(c_feed,1)} (no-pause C/Z transition to next layer)")
+     lines.append("G90 (absolute XYZBC)")
++    # Immediate final OFF is intentional even when M67 is used for deposition: M67
++    # would not take effect without a following motion command.
+     lines.append("M68 E2 Q0.000 (wire feed OFF at final end only)")
+     lines.append("M68 E0 Q0.000 (beam current OFF at final end only)")
+     footer_settings = replace(effective_settings, safe_z_final_mm=max(effective_settings.safe_z_final_mm, height + 5.0))
+@@ -1631,11 +1696,11 @@
+     audit = audit_gcode(gcode, effective_settings)
+     if feed_limited_count:
+         warnings.append(f"WARNING: {feed_limited_count} no-pause C rings were feed-limited by C max; E2 was recalculated from actual F unless manual wire mode is enabled.")
+-    qmetal_values = [effective_settings.wire_area_mm2() * li.wire_mm_s for li in layer_infos]
++    qmetal_values = [effective_settings.wire_area_mm2() * li.wire_mm_s * float(effective_settings.deposition_efficiency) for li in layer_infos]
+     bead_cross_sections = [q / max(li.travel_speed_mm_s, 1e-9) for q, li in zip(qmetal_values, layer_infos)]
+     wall_est = [cs / max(float(li.z_next - li.z), 1e-9) for cs, li in zip(bead_cross_sections, layer_infos)]
+     stats.update({
+-        "app_version": "v4.2.9.9",
++        "app_version": APP_VERSION,
+         "rotational_path_strategy": "rotary_c_rings",
+         "rotary_c_mode": "fixed_z_no_pause_cz_transition",
+         "rotary_c_motion_mode": "no_pause_flat_rings",
+@@ -1665,6 +1730,16 @@
+         "wire_min_calculated_mm_s": min((li.wire_mm_s for li in layer_infos), default=0.0),
+         "wire_max_calculated_mm_s": max((li.wire_mm_s for li in layer_infos), default=0.0),
+         "wire_commanded_once_mm_s": float(wire_q),
++        "zone_output_updates_enabled": bool(zone_updates),
++        "analog_output_mode_requested": str(getattr(effective_settings, "analog_output_mode", "m68_compatible")),
++        "analog_output_code_effective": str(analog_code),
++        "machine_m67_confirmed": bool(getattr(effective_settings, "machine_m67_confirmed", False)),
++        "path_control_mode": str(getattr(effective_settings, "path_control_mode", "g64_tolerance")),
++        "g64_tolerance_mm": float(getattr(effective_settings, "g64_tolerance_mm", 0.08)),
++        "g64_naive_cam_q_mm": float(getattr(effective_settings, "g64_naive_cam_q_mm", 0.0)),
++        "deposition_efficiency": float(getattr(effective_settings, "deposition_efficiency", 1.0)),
++        "radius_span_mm": float(radius_span),
++        "radius_variation_tolerance_mm": float(radius_tol),
+         "feed_min_mm_min": min((li.feed_mm_min for li in layer_infos), default=0.0),
+         "feed_max_mm_min": max((li.feed_mm_min for li in layer_infos), default=0.0),
+         "current_commanded_once_ma": float(current_q),
+@@ -1814,7 +1889,7 @@
+     gcode = "\n".join(lines) + "\n"
+     audit = audit_gcode(gcode, effective_settings)
+     stats.update({
+-        "app_version": "v4.2.9.9",
++        "app_version": APP_VERSION,
+         "rotational_path_strategy": "rotary_c_rings",
+         "rotary_c_mode": "B_fixed_C_axis_rings",
+         "rotary_c_center_x_mm": float(effective_settings.rotary_c_center_x_mm),
+@@ -1958,7 +2033,7 @@
+     gcode = "\n".join(lines) + "\n"
+     audit = audit_gcode(gcode, effective_settings)
+     stats.update({
+-        "app_version": "v4.2.9.9",
++        "app_version": APP_VERSION,
+         "rotational_path_strategy": strategy,
+         "rotational_radial_step_mm": radial_step,
+         "rotational_points_per_circle": int(getattr(effective_settings, "rotational_points_per_circle", 160)),
+@@ -2679,6 +2754,8 @@
+     _ensure_finite_positive("hatch_spacing", settings.hatch_spacing, 0.0)
+     _ensure_finite_positive("wire_diameter_mm", settings.wire_diameter_mm, 0.0)
+     _ensure_finite_positive("deposition_efficiency", settings.deposition_efficiency, 0.0)
++    if float(settings.deposition_efficiency) > 1.0:
++        raise ValueError("deposition_efficiency должен быть <= 1.0")
+     _ensure_finite_positive("voltage_kv", settings.voltage_kv, 0.0)
+     _ensure_finite_positive("feed_bottom_mm_min", settings.feed_bottom_mm_min, 0.0)
+     _ensure_finite_positive("feed_top_mm_min", settings.feed_top_mm_min, 0.0)
+@@ -2721,6 +2798,16 @@
+         raise ValueError("rotary_c_motion_mode должен быть separate_rings или no_pause_flat_rings")
+     if float(getattr(settings, "rotary_c_transition_angle_deg", 17.0)) < 0:
+         raise ValueError("rotary_c_transition_angle_deg должен быть >= 0")
++    if float(getattr(settings, "rotary_c_radius_variation_tolerance_mm", 0.05)) < 0:
++        raise ValueError("rotary_c_radius_variation_tolerance_mm должен быть >= 0")
++    path_mode = str(getattr(settings, "path_control_mode", "g64_tolerance")).strip().lower()
++    if path_mode not in ("g64_tolerance", "machine_default", "g61", "g61_1", "g61.1"):
++        raise ValueError("path_control_mode должен быть g64_tolerance, machine_default, g61 или g61_1")
++    if float(getattr(settings, "g64_tolerance_mm", 0.08)) < 0 or float(getattr(settings, "g64_naive_cam_q_mm", 0.0)) < 0:
++        raise ValueError("G64 P/Q должны быть >= 0")
++    analog_mode = str(getattr(settings, "analog_output_mode", "m68_compatible")).strip().lower()
++    if analog_mode not in ("m68_compatible", "m67_synchronized"):
++        raise ValueError("analog_output_mode должен быть m68_compatible или m67_synchronized")
+     if str(getattr(settings, "wire_feed_mode", "auto")).strip().lower() not in ("auto", "manual_constant", "manual_bottom_top"):
+         raise ValueError("wire_feed_mode должен быть auto, manual_constant или manual_bottom_top")
+ 
+@@ -2734,7 +2821,7 @@
+     # Important: wire_max_mm_s is a warning threshold, not a hard clamp.
+     # v4.2.9.7 can either auto-calculate E2 from geometry/F or use operator-set E2.
+     wire = _wire_for_layer_ratio(settings, f, ratio)
+-    qmetal = area * wire
++    qmetal = area * wire * float(settings.deposition_efficiency)
+     p = settings.voltage_kv * current
+     e_actual = p / max(travel, 1e-9)
+     e_vol = p / qmetal if qmetal > 0 else float("inf")
+@@ -2751,9 +2838,47 @@
+     return f"{v:.{nd}f}"
+ 
+ 
++def _path_control_gcode(settings: ProcessSettings) -> List[str]:
++    """Return explicit path-control commands without changing operator overrides.
++
++    LinuxCNC recommends an explicit path-control mode in the preamble. Q=0
++    disables naive-CAM collapsing, which is safer for short C+Z transition
++    segments. ``machine_default`` intentionally emits nothing.
++    """
++    mode = str(getattr(settings, "path_control_mode", "g64_tolerance") or "g64_tolerance").strip().lower()
++    if mode == "machine_default":
++        return []
++    if mode == "g61":
++        return ["G61 (exact path; may slow/stop at programmed points)"]
++    if mode in ("g61_1", "g61.1"):
++        return ["G61.1 (exact stop; stops at every segment)"]
++    p = max(0.0, float(getattr(settings, "g64_tolerance_mm", 0.08)))
++    q = max(0.0, float(getattr(settings, "g64_naive_cam_q_mm", 0.0)))
++    return [f"G64 P{_fmt(p,3)} Q{_fmt(q,3)} (path blending; Q0 disables naive-CAM collapse)"]
++
++
++def _deposition_analog_code(settings: ProcessSettings) -> str:
++    """Choose M67 only after explicit machine/HAL confirmation.
++
++    The shipped Bormash-compatible behaviour remains M68. This prevents an
++    unverified software update from silently switching to an analog output
++    command that may not be connected in the actual HAL configuration.
++    """
++    requested = str(getattr(settings, "analog_output_mode", "m68_compatible") or "m68_compatible").strip().lower()
++    if requested == "m67_synchronized" and bool(getattr(settings, "machine_m67_confirmed", False)):
++        return "M67"
++    return "M68"
++
++
++def _analog_setpoint_line(settings: ProcessSettings, channel: int, value: float, comment: str = "") -> str:
++    code = _deposition_analog_code(settings)
++    suffix = f" ({comment})" if comment else ""
++    return f"{code} E{int(channel)} Q{_fmt(float(value),3)}{suffix}"
++
++
+ def _gcode_header(settings: ProcessSettings, stats: Dict[str, float]) -> List[str]:
+-    return [
+-        f"(Generated by EBAM G-code Studio v4.2.9.9)",
++    lines = [
++        f"(Generated by EBAM G-code Studio {APP_VERSION})",
+         f"(Machine: {settings.machine_name})",
+         f"(Units: mm, absolute coordinates)",
+         f"(Model size X={stats['size_x']:.3f} Y={stats['size_y']:.3f} Z={stats['size_z']:.3f}; source={stats.get('source_type','unknown')})",
+@@ -2761,13 +2886,18 @@
+         "G21 (mm)",
+         "G90 (absolute XYZ)",
+         "G94 (feed per minute)",
+-        f"G64 P{_fmt(settings.g64_tolerance_mm,3)}",
++    ]
++    lines.extend(_path_control_gcode(settings))
++    lines.extend([
+         "M429 (identity kinematics, if available)",
+-        "M68 E0 Q0.000 (beam current OFF)",
+-        "M68 E2 Q0.000 (wire feed OFF)",
++        "M68 E0 Q0.000 (beam current OFF; immediate safe state)",
++        "M68 E2 Q0.000 (wire feed OFF; immediate safe state)",
+         f"M68 E1 Q{_fmt(settings.focus_ma,3)} (focus)",
++        "(EXTERNAL_OVERRIDES: this program does not enable, disable or reset operator overrides)",
++        "(OPERATOR_NOTE: for calibrated comparison keep external WIRE override at 100%; adjustment remains available and machine-specific)",
+         f"G0 Z{_fmt(settings.z_hop_mm,3)}",
+-    ]
++    ])
++    return lines
+ 
+ 
+ def _gcode_footer(settings: ProcessSettings) -> List[str]:
+@@ -2898,14 +3028,14 @@
+ def estimate_bead_width_mm(settings: ProcessSettings, layer: "LayerInfo") -> float:
+     """Approximate single-bead width from mass conservation + parabolic profile.
+ 
+-    Bead cross-section area A = layer_height * hatch_spacing / efficiency (the lane
+-    it must fill). For a parabolic bead of height = layer_height, A = (2/3)*w*h,
+-    so w = 1.5 * A / h. This is an ESTIMATE only; the real width must be measured
+-    from a single-bead TEST on the machine.
++    In automatic E2 mode, deposition efficiency is already compensated in the
++    commanded wire feed. The deposited target area is therefore the geometric
++    lane area ``layer_height * hatch_spacing`` rather than that area divided by
++    efficiency. For a parabolic bead A=(2/3)*w*h, so w=1.5*A/h. This remains an
++    estimate; real width must be measured on a single-bead TEST.
+     """
+     h = max(settings.layer_height, 1e-9)
+-    eff = max(settings.deposition_efficiency, 1e-9)
+-    area = settings.layer_height * settings.hatch_spacing / eff
++    area = settings.layer_height * settings.hatch_spacing
+     return max(1.5 * area / h, 1e-9)
+ 
+ 
+@@ -3281,7 +3411,7 @@
+     audit = audit_gcode(gcode, effective_settings)
+     out_stats = dict(stats)
+     out_stats.update({
+-        "app_version": "v4.2.9.9",
++        "app_version": APP_VERSION,
+         "source_type": f"{source_label} special path",
+         "rotational_path_strategy": path_strategy_raw,
+         "special_path_strategy": strategy,
+@@ -3550,7 +3680,7 @@
+     audit = audit_gcode(gcode, settings)
+ 
+     stats.update({
+-        "app_version": "v4.2.9.9",
++        "app_version": APP_VERSION,
+         "layers_total": len(layer_infos),
+         "layers_requested": n_layers,
+         "layers_full_model": n_layers_full,
+@@ -4163,7 +4293,7 @@
+         status_text = '🟢 Критичных признаков не найдено'
+ 
+     stats = {
+-        'version': 'v4.2.9.6',
++        'version': APP_VERSION,
+         'line_count': line_count,
+         'segment_count': len(segments),
+         'deposition_segments': len(dep_segments),
+@@ -4224,7 +4354,7 @@
+     recommendations = analysis.get('recommendations', [])
+     bbox = stats.get('bbox') or {}
+     lines = []
+-    lines.append('EBAM G-code Studio v4.2.9.6 reverse G-code analysis')
++    lines.append(f'EBAM G-code Studio {APP_VERSION} reverse G-code analysis')
+     lines.append('================================================')
+     lines.append('')
+     lines.append(f"Status: {stats.get('status_text', 'OK for review/dry-run preparation')}")
+@@ -4277,6 +4407,12 @@
+     g0_active_c = 0
+     m0_count = 0
+     cycle_count = 0
++    m67_count = 0
++    m68_count = 0
++    m67_without_motion = 0
++    m68_while_active = 0
++    pending_analog: Dict[int, float] = {}
++    path_control_modes_seen: List[str] = []
+     last_x = None
+     last_y = None
+     last_z = None
+@@ -4303,6 +4439,13 @@
+         if not words:
+             continue
+ 
++        if re.search(r"(?:^|\s)G61\.1(?:\s|$)", up):
++            path_control_modes_seen.append("G61.1")
++        elif re.search(r"(?:^|\s)G61(?:\s|$)", up):
++            path_control_modes_seen.append("G61")
++        elif re.search(r"(?:^|\s)G64(?:\s|$)", up):
++            path_control_modes_seen.append("G64")
++
+         has_g_word = 'G' in words
+         explicit_motion: Optional[str] = None
+         non_motion_g = False
+@@ -4327,9 +4470,21 @@
+             mvals = [int(round(v)) for v in words.get('M', [])]
+             if 0 in mvals:
+                 m0_count += 1
++            if 67 in mvals and 'E' in words and 'Q' in words:
++                m67_count += 1
++                e = int(round(words['E'][0]))
++                q = float(words['Q'][0])
++                pending_analog[e] = q
++                if e == 0:
++                    max_i = max(max_i, abs(q))
++                elif e == 2:
++                    max_wire = max(max_wire, abs(q))
+             if 68 in mvals and 'E' in words and 'Q' in words:
++                m68_count += 1
+                 e = int(round(words['E'][0]))
+                 q = float(words['Q'][0])
++                if (beam_on or wire_on) and abs(q) > 1e-6:
++                    m68_while_active += 1
+                 if e == 0:
+                     beam_on = abs(q) > 1e-6
+                     max_i = max(max_i, abs(q))
+@@ -4351,6 +4506,14 @@
+         if not is_motion:
+             continue
+ 
++        if pending_analog:
++            for e, q in list(pending_analog.items()):
++                if e == 0:
++                    beam_on = abs(q) > 1e-6
++                elif e == 2:
++                    wire_on = abs(q) > 1e-6
++            pending_analog.clear()
++
+         old_x, old_y, old_z, old_c = last_x, last_y, last_z, last_c
+         x, y, z, c = last_x, last_y, last_z, last_c
+ 
+@@ -4408,6 +4571,10 @@
+ 
+         last_x, last_y, last_z, last_c = x, y, z, c
+ 
++    if pending_analog:
++        m67_without_motion = len(pending_analog)
++        ok = False
++        messages.append(f"DANGER: {m67_without_motion} queued M67 analog changes have no following motion command")
+     if g0_active:
+         ok = False
+         messages.append(f"DANGER: {g0_active} rapid G0 moves with beam/wire active")
+@@ -4436,6 +4603,12 @@
+     if relative_mode:
+         ok = False
+         messages.append("DANGER: program ends in G91 relative mode; check G90 recovery after W moves")
++    if m67_count:
++        messages.append(f"NOTE: synchronized M67 commands = {m67_count}; each must be followed by motion and requires HAL analog-out wiring")
++    if m68_while_active:
++        messages.append(f"WARNING: {m68_while_active} immediate M68 updates occurred while deposition outputs were active; these may break blending")
++    if any(m in ("G61", "G61.1") for m in path_control_modes_seen) and active_c_motion:
++        messages.append("WARNING: exact-path/exact-stop mode is present with active C motion; segment-boundary slowdown/stop is possible")
+     if not messages:
+         messages.append("No obvious dangerous G0/active transitions found")
+     stats = {
+@@ -4446,6 +4619,11 @@
+         "g0_active_c": g0_active_c,
+         "m0_count": m0_count,
+         "cycle_count": cycle_count,
++        "m67_count": m67_count,
++        "m68_count": m68_count,
++        "m67_without_following_motion": m67_without_motion,
++        "m68_updates_while_active": m68_while_active,
++        "path_control_modes_seen": list(dict.fromkeys(path_control_modes_seen)),
+         "max_current_ma": max_i,
+         "max_wire_mm_s": max_wire,
+         "w_move_count": w_move_count,
+@@ -4468,7 +4646,7 @@
+ 
+ def audit_report(settings: ProcessSettings, stats: Dict[str, Any], audit: AuditResult, warnings: List[str], layers: List[LayerInfo]) -> str:
+     lines = []
+-    lines.append("EBAM G-code Studio v4.2.9.7 audit")
++    lines.append(f"EBAM G-code Studio {APP_VERSION} audit")
+     lines.append("============================")
+     lines.append("")
+     lines.append("Process settings:")

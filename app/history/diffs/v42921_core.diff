@@ -1,0 +1,203 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_20_TIME_LEVERS/ebam_gcode_studio/core.py	2026-07-16 04:08:09.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_20_TIME_LEVERS/ebam_gcode_studio/core.py	2026-07-16 23:19:55.026587957 +0000
+@@ -1,4 +1,4 @@
+-"""EBAM G-code Studio core v4.2.9.20.
++"""EBAM G-code Studio core v4.2.9.21.
+ 
+ STL/DXF/CSV -> layer slicing -> EBAM-oriented G-code.
+ Designed for Bormash/FABMETALL-style electron-beam wire deposition.
+@@ -29,8 +29,8 @@
+ Point = Tuple[float, float]
+ Segment = Tuple[float, float, float, float]
+ 
+-APP_VERSION = "v4.2.9.20"
+-EXPERIENCE_PROFILE_VERSION = "v4.2.9.20-experience-profile"
++APP_VERSION = "v4.2.9.21"
++EXPERIENCE_PROFILE_VERSION = "v4.2.9.21-experience-profile"
+ 
+ 
+ BORMASH_LIMITS = {
+@@ -170,6 +170,18 @@
+     # no_pause_flat_rings = C360 at fixed Z, then C+transition_deg with Z+layer_height while E0/E2 stay ON.
+     rotary_c_motion_mode: str = "separate_rings"
+     rotary_c_transition_angle_deg: float = 17.0
++    # v4.2.9.21: radial feed-rate compensation for C-table rings. Field problem
++    # (Flange1_R6): with constant C, the outer rings run much faster linearly
++    # (v = C*pi*R/180 grows with R), so the volume balance drives wire feed E2 up
++    # 3-4x while beam power stays capped -> energy density collapses and the wire
++    # climbs out of the pool. This mode holds the LINEAR deposition speed roughly
++    # constant so E2 stays in a safe band; where the C floor is reached it shrinks
++    # the effective radial pitch instead of letting E2 run away.
++    rotary_c_constant_velocity: bool = False
++    rotary_c_target_linear_mm_s: float = 0.0   # 0 = auto from wire comfort band
++    rotary_c_wire_comfort_mm_s: float = 29.0   # E2 the operator considers stable
++    rotary_c_shrink_pitch_at_floor: bool = True
++    rotary_c_min_pitch_factor: float = 0.5     # do not shrink pitch below this fraction
+     rotary_c_continuous_keep_beam_wire_on: bool = False
+     rotary_c_disable_layer_pauses: bool = False
+     rotary_c_disable_w_retract: bool = False
+@@ -954,18 +966,23 @@
+             base = layer_parameters(z, height, effective_settings)
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+             max_c_required = max(max_c_required, required_c)
+-            actual_feed = base.feed_mm_min
+-            c_feed = required_c
++            # v4.2.9.21: radial feed-rate compensation (constant-velocity mode).
++            c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
++                effective_settings, radius, base.feed_mm_min)
+             if radius < float(effective_settings.rotary_c_min_radius_mm):
+                 small_radius_count += 1
+-            if required_c > float(effective_settings.rotary_c_max_deg_min) + 1e-9:
++            if (not bool(getattr(effective_settings, "rotary_c_constant_velocity", False))
++                    and required_c > float(effective_settings.rotary_c_max_deg_min) + 1e-9):
+                 if bool(getattr(effective_settings, "rotary_c_auto_limit_feed", True)):
+-                    c_feed = float(effective_settings.rotary_c_max_deg_min)
+-                    actual_feed = c_feed * math.pi * float(radius) / 180.0
+                     feed_limited_count += 1
+                 else:
+                     warnings.append(f"WARNING: layer {idx} radius {radius:.3f} requires C feed {required_c:.1f} deg/min above limit {effective_settings.rotary_c_max_deg_min:.1f}")
+             layer = _layer_parameters_with_feed(z, height, effective_settings, actual_feed)
++            if pitch_factor < 0.999:
++                layer.wire_mm_s = float(layer.wire_mm_s) * pitch_factor
++                _area_pf = effective_settings.wire_area_mm2()
++                _qm = _area_pf * layer.wire_mm_s * float(effective_settings.deposition_efficiency)
++                layer.energy_j_mm3 = float(effective_settings.voltage_kv * layer.current_ma / _qm) if _qm > 0 else float("inf")
+             layer.index = idx
+             layer.segments_count = 1
+             layer.contour_segments_count = 0
+@@ -1462,6 +1479,67 @@
+     return 180.0 * float(linear_feed_mm_min) / (math.pi * r)
+ 
+ 
++def _rotary_c_target_linear_mm_s(settings: ProcessSettings) -> float:
++    """Target linear deposition speed for constant-velocity radial compensation.
++
++    If the operator set an explicit target, use it. Otherwise derive it from the
++    comfortable wire feed E2 and the fill geometry, using the volume balance
++    E2 = pitch*z*v/A_wire  ->  v = E2_comfort * A_wire / (pitch*z). This is the
++    speed at which the deposited volume matches a stable, in-pool wire feed.
++    """
++    explicit = float(getattr(settings, "rotary_c_target_linear_mm_s", 0.0) or 0.0)
++    if explicit > 1e-6:
++        return explicit
++    e2_comfort = max(float(getattr(settings, "rotary_c_wire_comfort_mm_s", 29.0) or 29.0), 1e-6)
++    area = settings.wire_area_mm2()
++    z = max(float(settings.layer_height), 1e-6)
++    pitch = max(_effective_rotational_radial_step(settings), 1e-6)
++    eff = max(float(settings.deposition_efficiency), 1e-6)
++    v = e2_comfort * area * eff / (pitch * z)
++    # Clamp to what the C axis can actually deliver across the radii range.
++    return max(0.5, min(v, 200.0))
++
++
++def _rotary_c_ring_kinematics(settings: ProcessSettings, radius_mm: float,
++                              nominal_feed_mm_min: float) -> tuple:
++    """Return (c_feed_deg_min, actual_linear_feed_mm_min, pitch_factor) for one ring.
++
++    Constant-velocity mode: hold linear speed at the target by lowering C as R
++    grows. Where C would exceed its max (small R), clamp to max C (speed rises,
++    but energy density is high there so the pool copes). Where C would fall below
++    its min (large R), clamp to min C; the linear speed then rises again, so we
++    signal a pitch shrink (<1.0) to keep E2 bounded. Legacy mode returns the
++    classic behaviour (nominal feed, C capped at max).
++    """
++    r = max(float(radius_mm), 1e-9)
++    c_max = float(settings.rotary_c_max_deg_min)
++    c_min_floor = 450.0 if c_max >= 450.0 else max(1.0, 0.25 * c_max)
++    if not bool(getattr(settings, "rotary_c_constant_velocity", False)):
++        required_c = rotary_c_speed_deg_min(nominal_feed_mm_min, r)
++        if required_c > c_max + 1e-9 and bool(getattr(settings, "rotary_c_auto_limit_feed", True)):
++            return c_max, c_max * math.pi * r / 180.0, 1.0
++        return required_c, nominal_feed_mm_min, 1.0
++    # constant-velocity target
++    v_target = _rotary_c_target_linear_mm_s(settings)          # mm/s
++    f_target = v_target * 60.0                                  # mm/min
++    c_needed = rotary_c_speed_deg_min(f_target, r)             # deg/min to hold v_target
++    pitch_factor = 1.0
++    if c_needed > c_max:
++        c_feed = c_max                                         # small R: run at max C
++        actual_f = c_feed * math.pi * r / 180.0
++    elif c_needed < c_min_floor:
++        c_feed = c_min_floor                                   # large R: C floor
++        actual_f = c_feed * math.pi * r / 180.0
++        if bool(getattr(settings, "rotary_c_shrink_pitch_at_floor", True)):
++            v_actual = actual_f / 60.0
++            pitch_factor = max(float(getattr(settings, "rotary_c_min_pitch_factor", 0.5) or 0.5),
++                               min(1.0, v_target / max(v_actual, 1e-9)))
++    else:
++        c_feed = c_needed
++        actual_f = f_target
++    return c_feed, actual_f, pitch_factor
++
++
+ def _rotary_c_pass_gcode(radius_mm: float, layer: LayerInfo, settings: ProcessSettings, ring_no: int, rings_total: int, c_deg_min: float) -> List[str]:
+     """Emit one C-table ring: X/Z position, beam/wire ON, relative C360, beam/wire OFF."""
+     sign = -1.0 if str(settings.rotary_c_direction).strip().upper().endswith('-') else 1.0
+@@ -1639,19 +1717,23 @@
+             c_feed = _safe_float(zone.get("cfeed_deg_min", 0.0), 0.0)
+             actual_feed = _linear_feed_from_cfeed(c_feed, radius)
+             required_c = c_feed
++            pitch_factor = 1.0
+         else:
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+-            actual_feed = base.feed_mm_min
+-            c_feed = required_c
++            # v4.2.9.21: radial feed-rate compensation (constant-velocity mode).
++            c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
++                effective_settings, radius, base.feed_mm_min)
+         max_c_required = max(max_c_required, required_c)
+-        if c_feed > float(effective_settings.rotary_c_max_deg_min) + 1e-9:
++        if (not bool(getattr(effective_settings, "rotary_c_constant_velocity", False))
++                and required_c > float(effective_settings.rotary_c_max_deg_min) + 1e-9):
+             if bool(getattr(effective_settings, "rotary_c_auto_limit_feed", True)):
+-                c_feed = float(effective_settings.rotary_c_max_deg_min)
+-                actual_feed = _linear_feed_from_cfeed(c_feed, radius)
++                # kinematics already capped c_feed/actual_feed to the C max; just count it.
+                 feed_limited_count += 1
+             else:
+-                warnings.append(f"WARNING: layer {idx} radius {radius:.3f} requires C feed {c_feed:.1f} deg/min above limit {effective_settings.rotary_c_max_deg_min:.1f}")
++                warnings.append(f"WARNING: layer {idx} radius {radius:.3f} requires C feed {required_c:.1f} deg/min above limit {effective_settings.rotary_c_max_deg_min:.1f}")
+         layer = _layer_parameters_with_feed(z, height, effective_settings, actual_feed)
++        if pitch_factor < 0.999:
++            layer.wire_mm_s = float(layer.wire_mm_s) * pitch_factor
+         wire_override = None
+         current_override = None
+         if zone and bool(getattr(effective_settings, "experience_profile_apply_wire", True)) and _safe_float(zone.get("wire_mm_s", -1.0), -1.0) >= 0:
+@@ -1918,18 +2000,23 @@
+             base = layer_parameters(z, height, effective_settings)
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+             max_c_required = max(max_c_required, required_c)
+-            actual_feed = base.feed_mm_min
+-            c_feed = required_c
++            # v4.2.9.21: radial feed-rate compensation (constant-velocity mode).
++            c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
++                effective_settings, radius, base.feed_mm_min)
+             if radius < float(effective_settings.rotary_c_min_radius_mm):
+                 small_radius_count += 1
+-            if required_c > float(effective_settings.rotary_c_max_deg_min) + 1e-9:
++            if (not bool(getattr(effective_settings, "rotary_c_constant_velocity", False))
++                    and required_c > float(effective_settings.rotary_c_max_deg_min) + 1e-9):
+                 if bool(getattr(effective_settings, "rotary_c_auto_limit_feed", True)):
+-                    c_feed = float(effective_settings.rotary_c_max_deg_min)
+-                    actual_feed = c_feed * math.pi * float(radius) / 180.0
+                     feed_limited_count += 1
+                 else:
+                     warnings.append(f"WARNING: layer {idx} radius {radius:.3f} requires C feed {required_c:.1f} deg/min above limit {effective_settings.rotary_c_max_deg_min:.1f}")
+             layer = _layer_parameters_with_feed(z, height, effective_settings, actual_feed)
++            if pitch_factor < 0.999:
++                layer.wire_mm_s = float(layer.wire_mm_s) * pitch_factor
++                _area_pf = effective_settings.wire_area_mm2()
++                _qm = _area_pf * layer.wire_mm_s * float(effective_settings.deposition_efficiency)
++                layer.energy_j_mm3 = float(effective_settings.voltage_kv * layer.current_ma / _qm) if _qm > 0 else float("inf")
+             layer.index = idx
+             layer.segments_count = 1
+             layer.contour_segments_count = 0
+@@ -2852,7 +2939,7 @@
+         raise ValueError("rotational_path_strategy должен быть 'hatch', 'rings/xy_rings', 'spiral/xy_spiral', 'rotary_c_rings' или 'stl_rotary_c_rings'")
+     if float(getattr(settings, "rotational_radial_step_mm", 0.0)) < 0:
+         raise ValueError("rotational_radial_step_mm должен быть >= 0")
+-    # v4.2.9.20 (ported from v4.2.9.16): radial step = 0 must NOT silently collapse to
++    # v4.2.9.21 (ported from v4.2.9.16): radial step = 0 must NOT silently collapse to
+     # hatch_spacing for a rotational strategy. Field case Flange_V1: radial_step=0
+     # stacked all rings on one line -> a cup/cone instead of a flat disc, +6x layer
+     # height. Also inflates ring count and wrecks the time estimate.

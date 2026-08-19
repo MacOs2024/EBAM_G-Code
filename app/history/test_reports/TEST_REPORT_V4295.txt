@@ -1,0 +1,44 @@
+EBAM G-Code Studio v4.2.9.6 REAL C RADIUS LIMIT - TEST REPORT
+
+Base branch:
+- v4.2.9.4 FULL RECALC
+- The abandoned v4.2.9.3 WIRE_FEED_FIX branch is not used.
+
+Problem:
+- Rotary C ring G-code generated rings from outer radius toward inner radius.
+- For cup/balloon/ring deposition the requested safer/clearer default is inner diameter -> outer diameter.
+
+Implemented:
+1. Parametric rotational vessel ring radii now return inner-to-outer order.
+   - Solid bottom/disk: centre/near-centre first, then outward.
+   - Annular shell/wall: inner wall first, then outer wall.
+2. STL/section rotary C radii now return inner-to-outer order.
+3. Generic polygon special paths using rotary C rings now inherit the same order.
+4. XY concentric ring strategy also uses inner-to-outer order through the same radii helper.
+5. Generated G-code now includes an explicit marker:
+   (RING_ORDER: inner_to_outer; ...)
+
+Before/after proof with the same test cup:
+- v4.2.9.4 old radii in first layer: [39.0, 37.0]
+  Meaning: outer -> inner.
+- v4.2.9.6 new radii in first layer: [36.0, 38.0, 39.0]
+  Meaning: inner -> outer.
+
+Verification:
+- Windows py_compile app/core/cli/launcher: PASS
+- Linux py_compile app/core/cli/launcher: PASS
+- Windows ring-order tests: 7/7 PASS
+- Linux ring-order tests: 7/7 PASS
+- Windows CLI CSV generation: PASS
+- Linux CLI CSV generation: PASS
+
+Functional checks:
+- Old version confirmed as outer-to-inner: PASS
+- New parametric rotary C rings are inner-to-outer: PASS
+- New polygon rotary C rings are inner-to-outer: PASS
+- New radii helper is monotonically ascending: PASS
+- New G-code contains RING_ORDER marker: PASS
+
+Notes:
+- Inner-to-outer order can make the first ring the smallest radius. With rotary C, small radii require higher C speed, so C-feed limiting may activate on the first ring. This is physically correct and visible in the C-limit diagnostics from v4.2.9.4.
+- This version changes ring ordering only. It does not change the C-limit full recalculation logic from v4.2.9.4.

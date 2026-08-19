@@ -1,0 +1,66 @@
+EBAM G-Code Studio v4.2.9.6 REAL C RADIUS LIMIT - TEST REPORT
+
+Reason for release:
+The user found that STL mode had a recommendation for C-table/ring strategy, but not the full set of actual selectable strategies. The same risk could repeat in simple vs advanced modes and across geometry sources.
+
+Main fix:
+A single full path strategy set is now used everywhere:
+- Поворотный стол C — кольца
+- Концентрические XY-кольца
+- Спираль XY внутри слоя
+- Змейкой Y-
+- Змейкой Y+
+- Змейкой X-
+- Змейкой X+
+- Параллельно Y-
+- Параллельно Y+
+- Параллельно X-
+- Параллельно X+
+
+Where it is applied:
+- Simple mode: full set shown in section 7.
+- Advanced mode: full set shown in section 8.
+- STL 3D: full set available.
+- Чаши/баллоны: full set available.
+- Standard figures / CSV / DXF polygon sources: full set available.
+
+New generator support:
+- Generic polygon/section sources can now generate:
+  * rotary C-table rings via G91 C360;
+  * concentric XY rings;
+  * XY spiral;
+  * normal hatch/parallel/snake modes.
+- STL can now generate:
+  * rotary C-table rings;
+  * concentric XY rings;
+  * XY spiral;
+  * normal hatch/parallel/snake modes.
+
+Important engineering note:
+For non-round geometry, C-table / XY-rings / XY-spiral are approximations based on section radii. Normal snake/parallel X/Y paths remain more exact for non-axisymmetric geometry.
+
+Preview changes:
+- STL preview now shows C-table, XY-ring, XY-spiral, snake and parallel modes differently.
+- Generic polygon preview also shows special C/ring/spiral modes, not only hatch.
+- Captions warn when circular/spiral approximation may not match non-round sections.
+
+Verification:
+- Windows py_compile app/core/cli/launcher: PASS
+- Linux py_compile app/core/cli/launcher: PASS
+- Windows functional/source tests: 33/33 PASS
+- Linux functional/source tests: 33/33 PASS
+- CLI CSV generation: PASS
+- Polygon source generation: hatch / rotary C / XY rings / XY spiral: PASS
+- STL cylinder generation: hatch / rotary C / XY rings / XY spiral: PASS
+- C-table G-code marker and G1 C360 commands: PASS
+- Special path marker present for rings/spiral: PASS
+
+What was learned:
+A recommendation is not enough. Every strategy that is recommended must exist in:
+1. simple UI,
+2. advanced UI,
+3. preview,
+4. settings object,
+5. G-code generator,
+6. audit/test report.
+This release adds a single shared choice list and tests the whole chain.

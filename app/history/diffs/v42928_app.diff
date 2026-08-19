@@ -1,0 +1,130 @@
+--- /tmp/a27.py	2026-07-21 05:45:50.670184348 +0000
++++ /tmp/b28.py	2026-07-21 05:45:50.674672612 +0000
+@@ -3242,7 +3242,7 @@
+     )
+ 
+ # ------------------------- main tabs -------------------------
+-tabs = st.tabs(["🏠 Сводка", "📘 Инструкция", "👁️ Предпросмотр", "⚙️ Генерация", "🧩 JSON", "🧪 Калибровка"])
++tabs = st.tabs(["🏠 Сводка", "📘 Инструкция", "👁️ Предпросмотр", "⚙️ Генерация", "🧩 JSON", "🧪 Калибровка", "📋 Профили и журнал"])
+ 
+ with tabs[0]:
+     st.caption(f"Режим интерфейса: {ui_mode_ru}. Технологическая цель: {mode}. Материал: {mat_labels[material_key]}.")
+@@ -3754,6 +3754,30 @@
+ 
+ 
+ with tabs[5]:
++    st.subheader("🧪 Мастер калибровки по одному валику (TEST → параметры)")
++    st.caption("Наплавь один валик, замерь ширину и высоту штангелем — мастер посчитает шаг дорожек, "
++               "высоту слоя и перекрытие. Это замыкает TEST обратно в параметры (пункт 1).")
++    _wc1, _wc2, _wc3 = st.columns(3)
++    with _wc1:
++        _bw = st.number_input("Ширина валика, мм", min_value=0.0, max_value=30.0, value=0.0, step=0.1, key="wiz_bw")
++    with _wc2:
++        _bh = st.number_input("Высота валика, мм", min_value=0.0, max_value=15.0, value=0.0, step=0.1, key="wiz_bh")
++    with _wc3:
++        _om = st.selectbox("Модель перекрытия", ["TOM 0.738·w (Ding)", "FOM 0.667·w (Suryakumar)"], index=0, key="wiz_om")
++    _lhf = st.slider("Доля высоты валика на слой (для сплавления)", min_value=0.5, max_value=1.0, value=0.9, step=0.05, key="wiz_lhf")
++    if _bw > 0 and _bh > 0:
++        _cal = _gtools.calibrate_from_bead(_bw, _bh, "tom" if _om.startswith("TOM") else "fom", float(_lhf))
++        _m1, _m2, _m3 = st.columns(3)
++        _m1.metric("Шаг дорожек", f"{_cal['hatch_spacing_mm']:.3f} мм")
++        _m2.metric("Высота слоя", f"{_cal['layer_height_mm']:.3f} мм")
++        _m3.metric("Перекрытие", f"{_cal['overlap_percent']:.0f}%")
++        st.caption(f"Валиков на 100 мм ширины: {_cal['beads_per_100mm']:.1f} · соотношение ширина/высота: {_cal['aspect_w_over_h']:.2f}")
++        for _n in _cal["notes"]:
++            st.warning(_n)
++        st.info("Перенеси эти значения в поля «Шаг дорожек» и «Шаг слоя Z» слева (или сохрани профиль во вкладке «Профили и журнал»).")
++    else:
++        st.caption("Введите ширину и высоту валика, чтобы увидеть рекомендованные шаг и высоту слоя.")
++    st.divider()
+     st.subheader("Калибровка по фактическому опыту")
+     st.caption("Идея из внешнего отчёта: измерили реальную деталь и ручные override - получили следующий зонный профиль C/E2/E0/Z, не копируя высокую E2 слепо.")
+     if st.session_state.get("experience_profile_apply_now", False):
+@@ -3888,5 +3912,87 @@
+ 
+ 
+ 
++with tabs[6]:
++    st.subheader("📦 Профили режимов")
++    st.caption("Сохрани текущие настройки как именованный профиль (пункт 4) — можно вместе с замерами "
++               "валика. Потом загрузи профиль обратно и применяй в JSON-вкладке / CLI.")
++    _pc1, _pc2 = st.columns(2)
++    with _pc1:
++        _pname = st.text_input("Имя профиля", value="Профиль 1", key="prof_name")
++        _pnote = st.text_input("Заметка", value="", key="prof_note")
++        _pbw = st.number_input("Ширина валика (опц.), мм", min_value=0.0, max_value=30.0, value=0.0, step=0.1, key="prof_bw")
++        _pbh = st.number_input("Высота валика (опц.), мм", min_value=0.0, max_value=15.0, value=0.0, step=0.1, key="prof_bh")
++        try:
++            _prof_json = _gtools.make_profile(_pname, settings_to_json(settings), _pbw, _pbh, _pnote)
++            st.download_button("💾 Сохранить профиль .json", _prof_json,
++                               file_name=f"ebam_profile_{_pname.strip().replace(' ', '_') or 'profile'}.json",
++                               mime="application/json", key="prof_save")
++        except Exception as _e:
++            st.warning(f"Не удалось собрать профиль: {_e}")
++    with _pc2:
++        _pup = st.file_uploader("Загрузить профиль .json", type=["json"], key="prof_upload")
++        if _pup is not None:
++            try:
++                _r = _gtools.read_profile(_pup.getvalue().decode("utf-8", errors="replace"))
++                if _r.get("ok"):
++                    st.success(f"Профиль: {_r['name']}")
++                    if _r.get("meta"):
++                        st.caption(", ".join(f"{k}={v}" for k, v in _r["meta"].items() if v))
++                    st.code(_r["settings_json"], language="json")
++                    st.caption("Скопируй JSON во вкладку «JSON» или сохрани как ebam_settings.json для CLI.")
++                else:
++                    st.warning(_r.get("error", "Не удалось прочитать профиль."))
++            except Exception as _e:
++                st.warning(f"Ошибка чтения: {_e}")
++
++    st.divider()
++    st.subheader("📓 Журнал наплавок")
++    st.caption("Записывай факт против расчёта (пункт 5). Со временем это станет твоей базой режимов. "
++               "Журнал хранится в скачиваемом .json — загрузи существующий, добавь запись, сохрани снова.")
++    _jup = st.file_uploader("Загрузить журнал .json (если есть)", type=["json"], key="jrnl_upload")
++    _entries = []
++    if _jup is not None:
++        try:
++            _entries = _gtools.journal_from_json(_jup.getvalue().decode("utf-8", errors="replace"))
++            st.caption(f"Загружено записей: {len(_entries)}")
++        except Exception as _e:
++            st.warning(f"Ошибка чтения журнала: {_e}")
++    with st.form("journal_form"):
++        st.markdown("**Новая запись**")
++        _jc1, _jc2 = st.columns(2)
++        with _jc1:
++            _jpart = st.text_input("Деталь / версия", value="")
++            _jsha = st.text_input("SHA / имя файла", value="")
++            _jverdict = st.text_input("Вердикт", value="")
++            _jphotos = st.number_input("Число фото", min_value=0, max_value=99, value=0, step=1)
++        with _jc2:
++            st.caption("Размеры: план → факт (через дефис имя размера)")
++            _jd1 = st.text_input("Размер 1 (имя)", value="OD")
++            _jp1 = st.number_input("план 1", value=0.0, step=0.1, key="jp1")
++            _jm1 = st.number_input("факт 1", value=0.0, step=0.1, key="jm1")
++            _jd2 = st.text_input("Размер 2 (имя)", value="высота")
++            _jp2 = st.number_input("план 2", value=0.0, step=0.1, key="jp2")
++            _jm2 = st.number_input("факт 2", value=0.0, step=0.1, key="jm2")
++        _submitted = st.form_submit_button("➕ Добавить запись в журнал")
++    if _submitted and _jpart:
++        _planned, _measured = {}, {}
++        if _jd1:
++            _planned[_jd1] = _jp1
++            _measured[_jd1] = _jm1
++        if _jd2:
++            _planned[_jd2] = _jp2
++            _measured[_jd2] = _jm2
++        _entries.append(_gtools.make_journal_entry(_jpart, _jsha, _planned, _measured, _jverdict, _jphotos))
++        st.success("Запись добавлена. Сохрани обновлённый журнал ниже.")
++    if _entries:
++        st.dataframe(pd.DataFrame([
++            {"дата": e.get("date"), "деталь": e.get("part"), "SHA": e.get("sha"),
++             "Δ размеры": ", ".join(f"{k}:{v:+.1f}" for k, v in (e.get("deltas") or {}).items()),
++             "вердикт": e.get("verdict"), "фото": e.get("photos")}
++            for e in _entries
++        ]))
++        st.download_button("💾 Сохранить журнал .json", _gtools.journal_to_json(_entries),
++                           file_name="ebam_journal.json", mime="application/json", key="jrnl_save")
++
+ st.markdown("---")
+ st.caption("By Керенцев Максим")

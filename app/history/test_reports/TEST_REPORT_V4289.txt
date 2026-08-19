@@ -1,0 +1,66 @@
+EBAM G-Code Studio v4.2.9.6 REAL C RADIUS LIMIT - TEST REPORT
+
+Base: v4.2.8.8 RU LABELS.
+Reason: User found that STL mode displayed a recommendation to use C-table/ring strategy for round STL, but the UI did not actually allow selecting C-table motion in STL mode. Also preview and generator needed to match the selected plan, and geometry-specific thermal profile needed to be explicit and recalculated.
+
+Fixed/added:
+1. STL path-plan selector now includes:
+   - Поворотный стол C — кольца по STL
+   - Змейкой Y-
+   - Змейкой Y+
+   - Змейкой X-
+   - Змейкой X+
+   - Параллельно Y-
+   - Параллельно Y+
+   - Параллельно X-
+   - Параллельно X+
+   in both Simple and Advanced modes.
+2. STL C-table mode is now real, not only a recommendation:
+   - rotational_path_strategy = stl_rotary_c_rings
+   - STL is sliced by Z
+   - each STL section is approximated as circular radii around the STL XY centre
+   - G-code uses X = rotary_c_center_x + radius and G91 C360
+   - E0/E2 are recalculated if C speed limiting reduces linear feed.
+3. STL C-table UI controls added in both Simple and Advanced modes:
+   - C direction C+/C-
+   - X/Y C centre
+   - start C angle
+   - B angle
+   - C max speed deg/min
+   - small-radius warning
+   - auto-limit F by C speed
+   - radial step for C rings.
+4. Preview fixed for STL C-table mode:
+   - normal STL X/Y modes still show raster/parallel paths with arrows;
+   - STL C-table mode now shows circular C rings in the selected section;
+   - caption explains that the displayed rings become X=centre+R and G91 C360 in G-code.
+5. Thermal recommendation strengthened:
+   - recommend_settings_from_summary now modifies top/bottom energy, pauses and feed based on geometry;
+   - bowl/balloon-like/tall-round geometries get lower top energy and more top pause;
+   - broad non-round parts get separate mild thermal handling;
+   - UI displays the current geometry-based thermal note in Simple and Advanced modes.
+
+Safety limitations:
+- STL C-table mode is suitable only for STL models close to bodies of revolution.
+- For non-round or off-axis STL, this mode is an approximation and can deviate from the model.
+- The app warns when estimated section roundness spread is high.
+- For exact non-round STL, use normal X/Y STL path plans.
+
+Verification:
+- Context7 checked current Streamlit widget syntax for radio/selectbox/number_input/checkbox/expander/pyplot/caption.
+- Windows py_compile app/core/cli/launcher: PASS
+- Linux py_compile app/core/cli/launcher: PASS
+- Windows functional test: 22/22 PASS
+- Linux functional test: 22/22 PASS
+- CLI generation: PASS
+- Normal STL generation without C-table still works: PASS
+- STL rotary C generation from cylinder STL: PASS
+- G-code marker STL_SPECIAL_PATH: stl_rotary_c_rings: PASS
+- G91 / G1 C360 / G90 exists in STL C G-code: PASS
+- stats rotational_path_strategy = stl_rotary_c_rings: PASS
+- layer CSV contains energy_j_mm3: PASS
+- audit contains STL rotary C-table strategy and Bormash profile check: PASS
+- legacy direction tests still pass for continuous/segmented Y-/Y+/X-/X+: PASS
+
+Lesson learned:
+A visible recommendation is not enough. Every recommended strategy must be selectable in every relevant UI mode, must change preview visibly, and must map to real generator code. Future changes must be checked in four linked places: UI, preview, generator, and audit/test output.

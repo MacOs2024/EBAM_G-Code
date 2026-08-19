@@ -1,0 +1,4 @@
+case_id,e2_mm_s,relative_to_nominal_pct,model_wall_mm_eta_source,run_selected,operator,date,result,notes
+LOW,5.957,90.0,2.700,NO,,,NOT_RUN,
+NOMINAL,6.619,100.0,3.000,NO,,,NOT_RUN,
+HIGH,7.281,110.0,3.300,NO,,,NOT_RUN,

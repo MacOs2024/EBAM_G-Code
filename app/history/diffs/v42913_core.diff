@@ -1,0 +1,93 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_12_WINDOWS_SEAM_ETA_M67KIT/ebam_gcode_studio/core.py	2026-07-11 01:49:21.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_12_WINDOWS_SEAM_ETA_M67KIT/ebam_gcode_studio/core.py	2026-07-13 06:04:21.903347783 +0000
+@@ -1,4 +1,4 @@
+-"""EBAM G-code Studio core v4.2.9.12.
++"""EBAM G-code Studio core v4.2.9.13.
+ 
+ STL/DXF/CSV -> layer slicing -> EBAM-oriented G-code.
+ Designed for Bormash/FABMETALL-style electron-beam wire deposition.
+@@ -29,8 +29,8 @@
+ Point = Tuple[float, float]
+ Segment = Tuple[float, float, float, float]
+ 
+-APP_VERSION = "v4.2.9.12"
+-EXPERIENCE_PROFILE_VERSION = "v4.2.9.12-experience-profile"
++APP_VERSION = "v4.2.9.13"
++EXPERIENCE_PROFILE_VERSION = "v4.2.9.13-experience-profile"
+ 
+ 
+ BORMASH_LIMITS = {
+@@ -5045,6 +5045,73 @@
+             f"G-code is NOT changed. Calibrate the floor on a single-bead TEST."
+         ))
+ 
++    # --- Manual wire-feed volumetric sanity (advisory), v4.2.9.13 ---
++    # Field case Cylindr_V5: manual_constant E2=10.0 mm/s vs volumetric need 4.96
++    # (x2.01) passed silently and produced metal the bead lane cannot hold.
++    # Compare each layer's commanded E2 against the volumetric requirement for the
++    # DECLARED lane (z_step x effective step). Advisory only: manual mode stays
++    # fully manual (including E2=0 dry runs); we just force intent reconciliation.
++    wire_mode_chk = str(getattr(settings, "wire_feed_mode", "auto") or "auto").strip().lower()
++    if wire_mode_chk.startswith("manual") and layers:
++        try:
++            strategy_chk = str(getattr(settings, "rotational_path_strategy", "hatch")).lower()
++            is_rot_chk = ("rotary" in strategy_chk) or strategy_chk in ("rings", "spiral")
++            step_eff_chk = float(_effective_rotational_radial_step(settings)) if is_rot_chk else float(settings.hatch_spacing)
++            area_chk = settings.wire_area_mm2()
++            eta_chk = max(float(settings.deposition_efficiency), 1e-9)
++            RATIO_LO, RATIO_HI = 0.6, 1.5
++            worst = None  # (abs_log_ratio, layer, ratio, needed)
++            r_min = r_max = None
++            for li in layers:
++                wire_cmd = float(li.wire_mm_s)
++                if wire_cmd <= 1e-9:
++                    continue  # dry / no-wire pass is intentional in manual mode
++                z_step_li = li.z_next - li.z
++                if z_step_li <= 1e-6:
++                    z_step_li = float(settings.layer_height)
++                needed = z_step_li * float(li.travel_speed_mm_s) * step_eff_chk / (area_chk * eta_chk)
++                if needed <= 1e-9 or step_eff_chk <= 1e-9:
++                    continue
++                ratio = wire_cmd / needed
++                r_min = ratio if r_min is None else min(r_min, ratio)
++                r_max = ratio if r_max is None else max(r_max, ratio)
++                score = abs(math.log(max(ratio, 1e-9)))
++                if worst is None or score > worst[0]:
++                    worst = (score, li, ratio, needed)
++            if r_min is not None:
++                stats["wire_feed_ratio_min"] = r_min
++                stats["wire_feed_ratio_max"] = r_max
++                flag = (r_max > RATIO_HI + 1e-9) or (r_min < RATIO_LO - 1e-9)
++                stats["wire_manual_deviation_flag"] = bool(flag)
++                if flag and worst is not None:
++                    _, li_w, ratio_w, needed_w = worst
++                    implied_wall = area_chk * float(li_w.wire_mm_s) * eta_chk / max(float(li_w.travel_speed_mm_s), 1e-9)
++                    z_step_w = (li_w.z_next - li_w.z) if (li_w.z_next - li_w.z) > 1e-6 else float(settings.layer_height)
++                    implied_wall = implied_wall / max(z_step_w, 1e-9)
++                    direction = ("ПЕРЕПОДАЧА: лишний металл переполняет валик - наплывы/капли/уход геометрии"
++                                 if ratio_w > 1.0 else
++                                 "НЕДОПОДАЧА: металла меньше дорожки - тонкая стенка, оплавление кончика назад, шарики")
++                    warnings.insert(0, (
++                        f"MANUAL E2 x{ratio_w:.2f} от объёмной потребности (слой {getattr(li_w,'index','?')}: "
++                        f"задано {li_w.wire_mm_s:.2f} мм/с, для дорожки {step_eff_chk:.2f} мм x Z {z_step_w:.2f} мм "
++                        f"при F={li_w.feed_mm_min:.0f} нужно ~{needed_w:.2f} мм/с при η={eta_chk:.2f}). "
++                        f"Фактическая E2 подразумевает стенку ~{implied_wall:.2f} мм. {direction}. "
++                        f"Если стенка ~{implied_wall:.1f} мм - ЦЕЛЬ, приведите радиальный шаг/геометрию в соответствие; "
++                        f"иначе установите E2 ~{needed_w:.2f} мм/с или режим auto. G-code НЕ изменён."
++                    ))
++        except Exception:
++            pass  # advisory must never break generation
++
++    # --- Low-Z approach advisory, v4.2.9.13 ---
++    # With z_hop ~0 (his V5: header G0 Z0.000) the initial XY rapid runs at work
++    # height across the plate - clamp/tailstock collision risk. Advisory only.
++    if float(getattr(settings, "z_hop_mm", 0.0)) < 1.0:
++        warnings.append(
++            f"ПОДВОД НА МАЛОЙ ВЫСОТЕ: z_hop={float(settings.z_hop_mm):.2f} мм - начальный XY-переезд к точке старта "
++            f"пройдёт практически на рабочей высоте. Проверьте зазор с оснасткой/прижимами по трассе подвода "
++            f"(сухой прогон), либо поднимите z_hop для подвода."
++        )
++
+     if stats.get("gcode_lines", 0) > settings.max_gcode_lines_warning:
+         lines.append(f"  WARNING_LARGE_GCODE_LINES: {stats.get('gcode_lines')} lines; LinuxCNC preview/loading can be slow")
+     if stats.get("gcode_size_mb", 0.0) > settings.max_gcode_size_mb_warning:

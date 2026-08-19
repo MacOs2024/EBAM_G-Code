@@ -1,0 +1,172 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_25_ACCEPT_BASE/ebam_gcode_studio/core.py	2026-07-20 05:39:04.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_25_ACCEPT_BASE/ebam_gcode_studio/core.py	2026-07-20 11:11:23.519665949 +0000
+@@ -1,4 +1,4 @@
+-"""EBAM G-code Studio core v4.2.9.25.
++"""EBAM G-code Studio core v4.2.9.26.
+ 
+ STL/DXF/CSV -> layer slicing -> EBAM-oriented G-code.
+ Designed for Bormash/FABMETALL-style electron-beam wire deposition.
+@@ -29,8 +29,8 @@
+ Point = Tuple[float, float]
+ Segment = Tuple[float, float, float, float]
+ 
+-APP_VERSION = "v4.2.9.25"
+-EXPERIENCE_PROFILE_VERSION = "v4.2.9.25-experience-profile"
++APP_VERSION = "v4.2.9.26"
++EXPERIENCE_PROFILE_VERSION = "v4.2.9.26-experience-profile"
+ 
+ 
+ BORMASH_LIMITS = {
+@@ -170,7 +170,7 @@
+     # no_pause_flat_rings = C360 at fixed Z, then C+transition_deg with Z+layer_height while E0/E2 stay ON.
+     rotary_c_motion_mode: str = "separate_rings"
+     rotary_c_transition_angle_deg: float = 17.0
+-    # v4.2.9.25: radial feed-rate compensation for C-table rings. Field problem
++    # v4.2.9.26: radial feed-rate compensation for C-table rings. Field problem
+     # (Flange1_R6): with constant C, the outer rings run much faster linearly
+     # (v = C*pi*R/180 grows with R), so the volume balance drives wire feed E2 up
+     # 3-4x while beam power stays capped -> energy density collapses and the wire
+@@ -182,7 +182,7 @@
+     rotary_c_wire_comfort_mm_s: float = 29.0   # E2 the operator considers stable
+     rotary_c_shrink_pitch_at_floor: bool = True
+     rotary_c_min_pitch_factor: float = 0.5     # do not shrink pitch below this fraction
+-    # v4.2.9.25: adaptive inter-layer thermal dwell ("min layer cycle").
++    # v4.2.9.26: adaptive inter-layer thermal dwell ("min layer cycle").
+     # Field basis: R6 flange-family dwells 116-189 s appeared ONLY on short hub
+     # layers; long disc layers self-cool. If a layer finishes faster than the
+     # minimum cycle, a G4 dwell is appended (beam/wire already OFF between rings).
+@@ -975,7 +975,7 @@
+             base = layer_parameters(z, height, effective_settings)
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+             max_c_required = max(max_c_required, required_c)
+-            # v4.2.9.25: radial feed-rate compensation (constant-velocity mode).
++            # v4.2.9.26: radial feed-rate compensation (constant-velocity mode).
+             c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
+                 effective_settings, radius, base.feed_mm_min)
+             if radius < float(effective_settings.rotary_c_min_radius_mm):
+@@ -1750,7 +1750,7 @@
+             pitch_factor = 1.0
+         else:
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+-            # v4.2.9.25: radial feed-rate compensation (constant-velocity mode).
++            # v4.2.9.26: radial feed-rate compensation (constant-velocity mode).
+             c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
+                 effective_settings, radius, base.feed_mm_min)
+         max_c_required = max(max_c_required, required_c)
+@@ -1855,6 +1855,15 @@
+         lines.append(f"G1 C{_fmt(turn,3)} F{_fmt(c_feed,1)}")
+         if i < len(layer_infos) - 1:
+             dz = max(0.0, float(layer_infos[i+1].z) - float(layer.z))
++            _np_tdw = _thermal_dwell_for_layer(effective_settings, abs(float(turn)) / max(float(c_feed), 1e-9) * 60.0)
++            if _np_tdw > 0:
++                lines.append(_analog_setpoint_line(effective_settings, 2, 0.0, "THERMAL_DWELL: wire off before dwell"))
++                lines.append(_analog_setpoint_line(effective_settings, 0, 0.0, "THERMAL_DWELL: beam off before dwell"))
++                lines.append(f"G4 P{_fmt(_np_tdw,1)} (THERMAL_DWELL L{layer.index}: adaptive - one restrike per dwell)")
++                lines.append(_analog_setpoint_line(effective_settings, 0, float(commanded_current), "re-arm beam after thermal dwell"))
++                lines.append(_analog_setpoint_line(effective_settings, 2, float(commanded_wire), "re-arm wire after thermal dwell"))
++                thermal_dwell_count += 1
++                thermal_dwell_total_s += _np_tdw
+             lines.append(f"G1 C{_fmt(transition_deg,3)} Z{_fmt(dz,3)} F{_fmt(c_feed,1)} (no-pause C/Z transition to next layer)")
+     lines.append("G90 (absolute XYZBC)")
+     # Immediate final OFF is intentional even when M67 is used for deposition: M67
+@@ -2035,7 +2044,7 @@
+             base = layer_parameters(z, height, effective_settings)
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+             max_c_required = max(max_c_required, required_c)
+-            # v4.2.9.25: radial feed-rate compensation (constant-velocity mode).
++            # v4.2.9.26: radial feed-rate compensation (constant-velocity mode).
+             c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
+                 effective_settings, radius, base.feed_mm_min)
+             if radius < float(effective_settings.rotary_c_min_radius_mm):
+@@ -2165,6 +2174,8 @@
+ 
+ def _generate_rotational_shell_ring_spiral(params: Dict[str, Any], settings: ProcessSettings, progress_callback: Optional[Callable[[int, int, str], None]] = None) -> GenerationResult:
+     """Generate dedicated ring/spiral G-code for rotational vessels."""
++    thermal_dwell_count = 0
++    thermal_dwell_total_s = 0.0
+     validate_process_settings(settings, height=float(params.get("height_mm", params.get("height", 80.0))))
+     stats = rotational_shell_summary(params)
+     height = float(stats["size_z"])
+@@ -2217,6 +2228,11 @@
+         lines.extend(_continuous_layer_gcode(segs, layer, effective_settings, {}, f"rot_{strategy}"))
+         if layer.layer_pause_s > 0:
+             lines.append(f"G4 P{_fmt(layer.layer_pause_s,3)} (layer thermal stabilization)")
++        _tdw = _thermal_dwell_for_layer(effective_settings, path_len / max(float(layer.travel_speed_mm_s), 1e-9))
++        if _tdw > 0:
++            lines.append(f"G4 P{_fmt(_tdw,1)} (THERMAL_DWELL L{idx}: adaptive - layer cycle below minimum)")
++            thermal_dwell_count += 1
++            thermal_dwell_total_s += _tdw
+         layer.path_length_mm = path_len
+         layer.contour_length_mm = 0.0
+         total_active_len += path_len
+@@ -2224,6 +2240,9 @@
+         layer_infos.append(layer)
+     if not layer_infos:
+         raise RuntimeError("No rotational ring/spiral layers were generated. Check vessel diameter, wall thickness, radial step and height.")
++    if thermal_dwell_count:
++        warning_messages.append(f"ТЕПЛОВЫЕ ВЫДЕРЖКИ: {thermal_dwell_count} шт, суммарно {thermal_dwell_total_s/60.0:.1f} мин "
++                                f"(мин. цикл слоя {float(getattr(effective_settings, 'thermal_min_layer_cycle_min', 0.0)):.1f} мин); время включено в G-code (G4).")
+     footer_settings = replace(effective_settings, safe_z_final_mm=max(effective_settings.safe_z_final_mm, height + effective_settings.z_hop_mm + 5.0))
+     lines.extend(_gcode_footer(footer_settings))
+     gcode = "\n".join(lines) + "\n"
+@@ -2982,7 +3001,7 @@
+         raise ValueError("rotational_path_strategy должен быть 'hatch', 'rings/xy_rings', 'spiral/xy_spiral', 'rotary_c_rings' или 'stl_rotary_c_rings'")
+     if float(getattr(settings, "rotational_radial_step_mm", 0.0)) < 0:
+         raise ValueError("rotational_radial_step_mm должен быть >= 0")
+-    # v4.2.9.25 (ported from v4.2.9.16): radial step = 0 must NOT silently collapse to
++    # v4.2.9.26 (ported from v4.2.9.16): radial step = 0 must NOT silently collapse to
+     # hatch_spacing for a rotational strategy. Field case Flange_V1: radial_step=0
+     # stacked all rings on one line -> a cup/cone instead of a flat disc, +6x layer
+     # height. Also inflates ring count and wrecks the time estimate.
+@@ -3930,7 +3949,7 @@
+                 base = layer_parameters(z, height, effective_settings)
+                 required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+                 max_c_required = max(max_c_required, required_c)
+-                # v4.2.9.25: CV radial compensation now also covers the special
++                # v4.2.9.26: CV radial compensation now also covers the special
+                 # cup/balloon STL path (his Flange1 route) - previously this loop
+                 # ignored rotary_c_constant_velocity entirely.
+                 c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
+@@ -3983,6 +4002,11 @@
+             lines.extend(_continuous_layer_gcode(segs, layer, effective_settings, {}, f"xy_{strategy}"))
+             if layer.layer_pause_s > 0:
+                 lines.append(f"G4 P{_fmt(layer.layer_pause_s,3)} (layer thermal stabilization)")
++            _tdw = _thermal_dwell_for_layer(effective_settings, path_len / max(float(layer.travel_speed_mm_s), 1e-9))
++            if _tdw > 0:
++                lines.append(f"G4 P{_fmt(_tdw,1)} (THERMAL_DWELL L{idx}: adaptive - layer cycle below minimum)")
++                thermal_dwell_count += 1
++                thermal_dwell_total_s += _tdw
+             layer_infos.append(layer)
+             total_active_len += path_len
+             total_segments += len(segs)
+@@ -4108,6 +4132,8 @@
+     # spacing from the overlap model (TOM 0.738w / FOM 0.667w) instead of an
+     # arbitrary value. This is the WAAM/EBAM standard step-over criterion.
+     bead_overlap_note = None
++    thermal_dwell_count = 0
++    thermal_dwell_total_s = 0.0
+     if getattr(settings, "auto_hatch_from_bead", False) and float(getattr(settings, "bead_width_mm", 0.0)) > 0:
+         rec = recommended_hatch_from_bead(settings.bead_width_mm, settings.overlap_model)
+         if rec > 1e-6:
+@@ -4140,6 +4166,9 @@
+     total_contours = 0
+     max_segments_layer = 0
+     warning_messages: List[str] = []
++    if thermal_dwell_count:
++        warning_messages.append(f"ТЕПЛОВЫЕ ВЫДЕРЖКИ: {thermal_dwell_count} шт, суммарно {thermal_dwell_total_s/60.0:.1f} мин "
++                 f"(мин. цикл слоя {float(getattr(settings, 'thermal_min_layer_cycle_min', 0.0)):.1f} мин); время включено в G-code (G4).")
+     if bead_overlap_note:
+         warning_messages.append(bead_overlap_note)
+     _strategy = str(getattr(settings, "deposition_strategy", "continuous")).strip().lower()
+@@ -4253,6 +4282,11 @@
+ 
+         if layer.layer_pause_s > 0:
+             lines.append(f"G4 P{_fmt(layer.layer_pause_s,3)} (layer thermal stabilization)")
++        _tdw = _thermal_dwell_for_layer(settings, (path_len + contour_len) / max(float(layer.travel_speed_mm_s), 1e-9))
++        if _tdw > 0:
++            lines.append(f"G4 P{_fmt(_tdw,1)} (THERMAL_DWELL L{idx}: adaptive - layer cycle below minimum)")
++            thermal_dwell_count += 1
++            thermal_dwell_total_s += _tdw
+         layer.path_length_mm = path_len
+         layer.contour_length_mm = contour_len
+         total_active_len += path_len + contour_len

@@ -1,0 +1,117 @@
+--- /tmp/a.py	2026-08-08 06:01:32.232442711 +0000
++++ /tmp/b.py	2026-08-08 06:01:32.244442711 +0000
+@@ -636,7 +636,17 @@
+         add("Энергия цель низ/верх, Дж/мм", f"{tj_b:.1f} / {tj_t:.1f}")
+     add("Энергия факт низ/верх, Дж/мм", f"{aj_b:.1f} / {aj_t:.1f}")
+     add("Шаг заполнения, мм", f"{step_mm:.3f} ({'радиальный (кольца/спираль)' if is_rot_step else 'hatch'})")
+-    add("Энергия объёма факт низ/верх, Дж/мм³", f"{aj_b / denom:.1f} / {aj_t / denom:.1f}")
++    _qv_b, _qv_t = aj_b / denom, aj_t / denom
++    _qv_worst = max(_qv_b, _qv_t) if max(_qv_b, _qv_t) > 90.0 else min(_qv_b, _qv_t)
++    if max(_qv_b, _qv_t) >= 110.0:
++        _qv_mark = "  ⚠ ПЕРЕГРЕВ (норма 55–90)"
++    elif min(_qv_b, _qv_t) <= 42.0:
++        _qv_mark = "  ⚠ НЕ ПРОПЛАВИТ (норма 55–90)"
++    elif max(_qv_b, _qv_t) > 90.0 or min(_qv_b, _qv_t) < 55.0:
++        _qv_mark = "  · вне полосы 55–90"
++    else:
++        _qv_mark = "  — в норме (55–90)"
++    add("Энергия объёма факт низ/верх, Дж/мм³", f"{_qv_b:.1f} / {_qv_t:.1f}{_qv_mark}")
+ 
+     floor_w = float(getattr(settings, "min_beam_power_w", 0.0) or 0.0)
+     if bool(getattr(settings, "power_floor_warning_enabled", True)) and floor_w > 0:
+@@ -1454,6 +1464,11 @@
+             "rotary_c_shrink_pitch_at_floor": True,
+         }
+         st.session_state["_cv_settings_active"] = st.session_state[f"_cv_settings_{key_prefix}"]
++        st.markdown("**Плотность аналоговых уставок E0/E2**")
++        simplify_ramps = st.checkbox(
++            "Упростить рампу проволоки (меньше M68, плавнее ход)", value=False, key=f"{key_prefix}_simpramp",
++            help="M68 в LinuxCNC не синхронизирован с движением: на каждой смене уставки станок тормозит до нуля и рвётся сглаживание G64. По умолчанию на каждую дорожку идут три уставки (мягкий старт, основная, мягкий финиш). С этой галочкой остаётся одна уставка на дорожку — движение ровнее и быстрее, но пропадает плавный вход/выход валика на концах дорожек (возможны наплывы на краях). Радикальное решение — перевести машину на M67 после HAL-кита.")
++        st.session_state["_ramp_settings_active"] = {"simplify_wire_ramps": bool(simplify_ramps)}
+         st.markdown("**Тепловая выдержка между слоями (адаптивно)**")
+         thermal_dwell_on = st.checkbox(
+             "Минимальный цикл слоя (тепловая выдержка)", value=False, key=f"{key_prefix}_thdw",
+@@ -1620,6 +1635,34 @@
+                 min_value=0.2, max_value=10.0, step=0.05, key="w_s_hatch",
+                 help="Расстояние между соседними дорожками или радиальный шаг для колец/спирали, если отдельный радиальный шаг = 0."
+             )
++            # vX: travel speed is now editable in simple mode too (previously
++            # it was buried in the recommender and only reachable in advanced mode).
++            st.session_state.setdefault("w_s_f0", float(recommended.feed_bottom_mm_min))
++            st.session_state.setdefault("w_s_f1", float(recommended.feed_top_mm_min))
++            _sf1, _sf2 = st.columns(2)
++            with _sf1:
++                simple_f0 = st.number_input(
++                    "Скорость низ F, мм/мин", min_value=10.0, max_value=3000.0, step=10.0,
++                    format="%.1f", key="w_s_f0",
++                    help="Скорость движения при наплавке нижних слоёв. Выше скорость — быстрее деталь, но на каждый миллиметр пути ложится меньше металла и меньше тепла.")
++            with _sf2:
++                simple_f1 = st.number_input(
++                    "Скорость верх F, мм/мин", min_value=10.0, max_value=3000.0, step=10.0,
++                    format="%.1f", key="w_s_f1",
++                    help="Скорость на верхних слоях. Обычно чуть выше нижней: верх детали остывает хуже.")
++            # Live volumetric energy density readout — the number that actually decides
++            # whether the bead fuses (too low) or spatters (too high).
++            _sec = float(layer_height) * float(hatch_spacing)
++            _qv_now = float(recommended.target_energy_bottom_j_per_mm) / max(_sec, 1e-9)
++            _p_now = float(recommended.target_energy_bottom_j_per_mm) * float(simple_f0) / 60.0
++            if _qv_now >= 110.0:
++                st.error(f"↳ Плотность энергии QV ≈ {_qv_now:.0f} Дж/мм³ — ПЕРЕГРЕВ (норма 55–90). Увеличьте слой/шаг или снизьте энергию.")
++            elif _qv_now <= 42.0:
++                st.error(f"↳ Плотность энергии QV ≈ {_qv_now:.0f} Дж/мм³ — НЕ ПРОПЛАВИТ (норма 55–90). Уменьшите слой/шаг или поднимите энергию.")
++            elif _qv_now > 90.0 or _qv_now < 55.0:
++                st.warning(f"↳ Плотность энергии QV ≈ {_qv_now:.0f} Дж/мм³ — вне рабочей полосы 55–90.")
++            else:
++                st.caption(f"↳ Плотность энергии QV ≈ {_qv_now:.0f} Дж/мм³ (норма 55–90) · мощность ≈ {_p_now:.0f} Вт · сечение валика {_sec:.3f} мм²")
+             st.session_state.setdefault("w_s_imax", float(recommended.current_max_ma))
+             current_max = st.number_input(
+                 "Лимит тока пучка E0, мА",
+@@ -1629,8 +1672,8 @@
+             if current_max > 100.0:
+                 st.warning("Лимит выше 100 мА — тяжёлая экспериментальная зона. Проверять только через TEST и штатные interlocks.")
+             beam_current_mode = "energy"
+-            beam_current_bottom_ma = float(recommended.target_energy_bottom_j_per_mm * recommended.feed_bottom_mm_min / max(60.0 * recommended.voltage_kv, 1e-9))
+-            beam_current_top_ma = float(recommended.target_energy_top_j_per_mm * recommended.feed_top_mm_min / max(60.0 * recommended.voltage_kv, 1e-9))
++            beam_current_bottom_ma = float(recommended.target_energy_bottom_j_per_mm * float(st.session_state.get("w_s_f0", recommended.feed_bottom_mm_min)) / max(60.0 * recommended.voltage_kv, 1e-9))
++            beam_current_top_ma = float(recommended.target_energy_top_j_per_mm * float(st.session_state.get("w_s_f1", recommended.feed_top_mm_min)) / max(60.0 * recommended.voltage_kv, 1e-9))
+             with st.expander("Уставка тока E0, если нужно вручную", expanded=False):
+                 use_current_setpoint = st.checkbox(
+                     "Задавать ток E0 напрямую",
+@@ -1720,6 +1763,8 @@
+             voltage_kv=voltage,
+             layer_height=float(layer_height),
+             hatch_spacing=float(hatch_spacing),
++            feed_bottom_mm_min=float(simple_f0),
++            feed_top_mm_min=float(simple_f1),
+             current_min_ma=0.0,
+             current_low_warning_ma=1.0,
+             current_max_ma=current_max,
+@@ -1764,6 +1809,9 @@
+         _th_apply = st.session_state.get("_thermal_settings_active") or {}
+         if _th_apply.get("thermal_min_layer_cycle_enabled"):
+             settings = replace(settings, **_th_apply)
++        _rp_apply = st.session_state.get("_ramp_settings_active") or {}
++        if _rp_apply.get("simplify_wire_ramps"):
++            settings = replace(settings, **_rp_apply)
+         settings, c_limit_info = _apply_rotary_c_feed_limit_to_settings(summary, settings)
+         if c_limit_info:
+             time_plan["c_limit_info"] = c_limit_info
+@@ -2214,6 +2262,9 @@
+     _th_apply = st.session_state.get("_thermal_settings_active") or {}
+     if _th_apply.get("thermal_min_layer_cycle_enabled"):
+         settings = replace(settings, **_th_apply)
++    _rp_apply = st.session_state.get("_ramp_settings_active") or {}
++    if _rp_apply.get("simplify_wire_ramps"):
++        settings = replace(settings, **_rp_apply)
+     settings, c_limit_info = _apply_rotary_c_feed_limit_to_settings(summary, settings)
+     if c_limit_info:
+         time_plan["c_limit_info"] = c_limit_info
+@@ -3452,6 +3503,8 @@
+                 "w_adv_hatch": _hv, "w_s_hatch": _hv,
+                 "w_adv_f0": float(_ap.get("feed_bottom", settings.feed_bottom_mm_min)),
+                 "w_adv_f1": float(_ap.get("feed_top", settings.feed_top_mm_min)),
++                "w_s_f0": float(_ap.get("feed_bottom", settings.feed_bottom_mm_min)),
++                "w_s_f1": float(_ap.get("feed_top", settings.feed_top_mm_min)),
+                 "w_adv_e0": float(_ap.get("energy_bottom", settings.target_energy_bottom_j_per_mm)),
+                 "w_adv_e1": float(_ap.get("energy_top", settings.target_energy_top_j_per_mm)),
+                 "w_adv_imax": float(_ap.get("current_max", settings.current_max_ma)),

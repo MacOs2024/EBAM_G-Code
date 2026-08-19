@@ -1,0 +1,115 @@
+--- pris29/ebam_gcode_studio/gcode_tools.py	2026-07-21 05:48:21.000000000 +0000
++++ w29/ebam_gcode_studio/gcode_tools.py	2026-08-08 05:59:05.529572735 +0000
+@@ -35,6 +35,30 @@
+     return out
+ 
+ 
++_XYLAYER_RE = re.compile(
++    r"LAYER\s+(\d+)/(\d+)\s+Z=([\d.]+)\s+I=([\d.]+)\s+F=([\d.]+)mm/min\s+WIRE=([\d.]+)mm/s"
++)
++
++
++def _xy_layers(gcode: str, wire_diameter_mm: float = 1.2, voltage_kv: float = 60.0,
++               efficiency: float = 1.0) -> List[Dict[str, float]]:
++    """Parse XY-hatch layer headers and derive per-layer QV.
++
++    v4.2.9.30: the traffic light used to parse only ring comments, so hatch/snake
++    strategies were checked for nothing at all. Layer headers carry I, F and WIRE,
++    which is enough to reconstruct the volumetric energy density.
++    """
++    area = math.pi * (float(wire_diameter_mm) ** 2) / 4.0
++    out = []
++    for m in _XYLAYER_RE.finditer(gcode):
++        e0 = float(m.group(4))
++        e2 = float(m.group(6))
++        qv = (float(voltage_kv) * e0) / max(area * e2 * float(efficiency), 1e-9)
++        out.append(dict(layer=int(m.group(1)), z=float(m.group(3)), e0=e0,
++                        feed=float(m.group(5)), e2=e2, qv=qv))
++    return out
++
++
+ def _links(gcode: str) -> List[Dict[str, float]]:
+     return [dict(n=int(m.group(1)), cspd=float(m.group(2)), e0=float(m.group(3)),
+                  e2=float(m.group(4))) for m in _LINK_RE.finditer(gcode)]
+@@ -44,10 +68,12 @@
+ def post_generation_check(gcode: str,
+                           e0_cap_ma: float = 40.0,
+                           e2_cap_mm_s: float = 50.0,
+-                          qv_floor_j_mm3: float = 50.0,
++                          qv_floor_j_mm3: float = 55.0,
++                          qv_ceiling_j_mm3: float = 90.0,
+                           c_max_deg_min: float = 600.0,
+                           min_beam_power_w: float = 900.0,
+-                          voltage_kv: float = 60.0) -> Dict[str, Any]:
++                          voltage_kv: float = 60.0,
++                          wire_diameter_mm: float = 1.2) -> Dict[str, Any]:
+     """Traffic-light check of a finished G-code against process limits.
+ 
+     Returns dict with per-item status ('ok'|'warn'|'bad'), numbers, and a list
+@@ -55,9 +81,10 @@
+     """
+     rings = _rings(gcode)
+     links = _links(gcode)
+-    e0_all = [r["e0"] for r in rings] + [l["e0"] for l in links]
+-    e2_all = [r["e2"] for r in rings] + [l["e2"] for l in links]
+-    qv_all = [r["qv"] for r in rings]
++    xy = _xy_layers(gcode, wire_diameter_mm=wire_diameter_mm, voltage_kv=voltage_kv)
++    e0_all = [r["e0"] for r in rings] + [l["e0"] for l in links] + [x["e0"] for x in xy]
++    e2_all = [r["e2"] for r in rings] + [l["e2"] for l in links] + [x["e2"] for x in xy]
++    qv_all = [r["qv"] for r in rings] + [x["qv"] for x in xy]
+     cs_all = [r["cspd"] for r in rings]
+     lines = gcode.splitlines()
+ 
+@@ -85,11 +112,26 @@
+     # QV floor
+     if qv_all:
+         mn = min(qv_all)
++        mx = max(qv_all)
+         n_low = sum(1 for x in qv_all if x < qv_floor_j_mm3 - 1e-6)
+-        st = "bad" if mn <= 42.0 else ("warn" if n_low else "ok")
+-        note = (f"{n_low} колец ниже {qv_floor_j_mm3:.0f}; порог отказа ~42" if n_low
+-                else "запас над порогом достаточный")
+-        add("Плотность энергии QV", st, f"min {mn:.1f} Дж/мм³", note)
++        n_high = sum(1 for x in qv_all if x > qv_ceiling_j_mm3 + 1e-6)
++        # v4.2.9.30: QV is now guarded from BOTH sides. Overheating (spatter,
++        # evaporation, wavy top) was previously invisible to this check.
++        if mn <= 42.0:
++            st = "bad"
++        elif mx >= 110.0:
++            st = "bad"
++        elif n_low or n_high:
++            st = "warn"
++        else:
++            st = "ok"
++        notes = []
++        if n_low:
++            notes.append(f"{n_low} участк. ниже {qv_floor_j_mm3:.0f} (порог отказа 42 — проволока лезет из ванны)")
++        if n_high:
++            notes.append(f"{n_high} участк. выше {qv_ceiling_j_mm3:.0f} (перегрев, брызги; отказ от 110)")
++        add("Плотность энергии QV", st, f"{mn:.1f}..{mx:.1f} Дж/мм³ (норма {qv_floor_j_mm3:.0f}–{qv_ceiling_j_mm3:.0f})",
++            "; ".join(notes) if notes else "в рабочей полосе")
+     # C within limits
+     if cs_all:
+         add("Скорость стола C", "warn" if max(cs_all) > c_max_deg_min + 1.0 else "ok",
+@@ -118,10 +160,20 @@
+         f"{len(dwells)} шт, Σ {sum(dwells)/60.0:.1f} мин" if dwells else "нет выдержек",
+         "покрыты" if dwells else "если есть короткие слои — включите мин. цикл")
+ 
++    # v4.2.9.30: analog setpoint density — one M68 per motion forces the LinuxCNC
++    # planner to sync on every segment, which breaks G64 blending and makes motion choppy.
++    _m68 = len(re.findall(r"^M6[78]\s", gcode, re.M))
++    _g1 = max(len(re.findall(r"^G1\s", gcode, re.M)), 1)
++    _ratio = _m68 / _g1
++    # Only meaningful on real programs; a handful of moves is not a motion problem.
++    add("Плотность уставок E0/E2", "warn" if (_ratio > 0.6 and _g1 >= 50) else "ok",
++        f"{_m68} команд на {_g1} движений ({_ratio:.2f}/ход)",
++        "почти на каждом ходу — планировщик рвёт сглаживание G64" if _ratio > 0.6 else "приемлемо")
++
+     order = {"bad": 0, "warn": 1, "ok": 2}
+     overall = min((it["status"] for it in items), key=lambda s: order[s]) if items else "warn"
+     return dict(status=overall, items=items,
+-                rings=len(rings), links=len(links),
++                rings=len(rings), links=len(links), xy_layers=len(xy),
+                 dwell_count=len(dwells), dwell_total_s=round(sum(dwells), 1),
+                 big_g4_count=len(big_g4))
+ 

@@ -1,0 +1,54 @@
+EBAM G-Code Studio v4.2.9.6 REAL C RADIUS LIMIT - TEST REPORT
+
+Base version:
+- v4.2.9.3 C LIMIT EXPLAIN.
+- The experimental v4.2.9.3 WIRE_FEED_FIX branch is not used in this release line.
+
+Reason for change:
+- Operator requested that when "Максимальная скорость C, град/мин" and "Автоограничивать F по лимиту C" are changed, all process values must be recalculated for a workable 3D deposition mode, not just time.
+
+Implemented:
+1. Added a visible recalculation chain in app.py:
+   - F requested / F effective
+   - E2 requested / E2 effective
+   - E0 requested-needed / E0 effective-needed
+   - E0 written to G-code
+   - actual J/mm after limitation
+   - C required / C allowed
+   - limiter reason
+2. If C-axis max speed limits F, all downstream UI calculations use effective F:
+   - E0
+   - E2
+   - J/mm
+   - J/mm3
+   - time estimate
+   - warnings
+3. Generator already had per-ring recalculation; verified it remains active:
+   - each C ring checks required deg/min
+   - actual linear feed is reduced if C max is exceeded
+   - layer E0/E2 are recalculated using actual feed
+
+Numerical verification:
+- Geometry summary minimum C radius: 18 mm
+- C max: 300 deg/min
+- Requested F bottom/top: 650 / 1500 mm/min
+- Feed cap = 300 * pi * 18 / 180 = 94.2478 mm/min
+- Effective F bottom/top after limit: 94.2478 / 94.2478 mm/min
+- Effective E2 follows formula: layer_height * (F/60) * hatch_spacing / wire_area
+- Effective E0 follows formula in energy mode: energy * F / (60 * voltage)
+
+Automated tests:
+- Windows py_compile: PASS
+- Linux py_compile: PASS
+- App helper extraction tests: PASS
+- C-limit recalculates F/E2/E0/J chain: PASS
+- High C max does not limit: PASS
+- Rotary C generator creates C360 G-code and recalculated layer parameters: PASS
+- Windows CLI CSV generation: PASS
+- Linux CLI CSV generation: PASS
+
+Manual verification expected in UI:
+- Set strategy to "Поворотный стол C — кольца".
+- Enable "Автоограничивать F по лимиту C".
+- Lower "Максимальная скорость C, град/мин".
+- The calculation table must change F effective, E2 effective, E0 after limiter, energy and total time.

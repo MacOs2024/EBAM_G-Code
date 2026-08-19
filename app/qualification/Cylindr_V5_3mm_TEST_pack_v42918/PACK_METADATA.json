@@ -1,0 +1,47 @@
+{
+  "app_version": "v4.2.9.18",
+  "source_settings_sha256": "77b8b96120768119fbdde483631f81364348ce25873313573b5b76473058e8fe",
+  "target_wall_mm": 3.0,
+  "test_height_mm": 10.0,
+  "test_layers": 20,
+  "nominal_e2_mm_s": 6.618924,
+  "spread_pct": 10.0,
+  "hot_run_authorized": false,
+  "machine_confirmations": {
+    "safe_initial_z_and_work_offset": false,
+    "c_direction_and_single_turn": false,
+    "c_plus_z_transition": false,
+    "m68_e0_e2_hal_mapping": false,
+    "hardware_interlocks": false
+  },
+  "generated_cases": [
+    {
+      "case_id": "DRY_RUN_MOTION",
+      "prefix": "00_DRY_RUN_MOTION_E0_0_E2_0",
+      "layers": 20,
+      "is_test_truncated": true,
+      "initial_positioning_z_mm": 7.0
+    },
+    {
+      "case_id": "LOW",
+      "prefix": "10_TEST_LOW_E2_5p957",
+      "layers": 20,
+      "is_test_truncated": true,
+      "initial_positioning_z_mm": 7.0
+    },
+    {
+      "case_id": "NOMINAL",
+      "prefix": "20_TEST_NOMINAL_E2_6p619",
+      "layers": 20,
+      "is_test_truncated": true,
+      "initial_positioning_z_mm": 7.0
+    },
+    {
+      "case_id": "HIGH",
+      "prefix": "30_TEST_HIGH_E2_7p281",
+      "layers": 20,
+      "is_test_truncated": true,
+      "initial_positioning_z_mm": 7.0
+    }
+  ]
+}

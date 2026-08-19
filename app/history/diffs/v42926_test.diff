@@ -1,0 +1,32 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_25_ACCEPT_BASE/thermal_dwell_regression_test.py	2026-07-18 12:36:59.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_25_ACCEPT_BASE/thermal_dwell_regression_test.py	2026-07-20 11:10:34.642389849 +0000
+@@ -41,7 +41,28 @@
+ check("disabled_no_dwells", "THERMAL_DWELL" not in res_off.gcode)
+ check("disabled_no_audit_line", "ТЕПЛОВЫЕ ВЫДЕРЖКИ" not in res_off.audit_text)
+ 
+-print(json.dumps({"cases_total": 11, "failures": failures,
++# 3) v4.2.9.26: XY ring/spiral parametric path must honour dwells too
++res_xy = core.generate_rotational_shell(params, S(**{**base, "rotational_path_strategy": "rings"},
++                                                  thermal_min_layer_cycle_enabled=True,
++                                                  thermal_min_layer_cycle_min=3.0, thermal_min_dwell_s=120.0))
++dw_xy = re.findall(r'^G4 P([0-9.]+) \(THERMAL_DWELL', res_xy.gcode, re.M)
++check("xy_dwells_emitted", len(dw_xy) >= 2, f"found {len(dw_xy)}")
++check("xy_audit_reports", "ТЕПЛОВЫЕ ВЫДЕРЖКИ" in res_xy.audit_text)
++res_xy_off = core.generate_rotational_shell(params, S(**{**base, "rotational_path_strategy": "rings"}))
++check("xy_disabled_none", "THERMAL_DWELL" not in res_xy_off.gcode)
++
++# 4) no-pause C path: dwell with beam-off cycle and re-arm
++res_np = core.generate_rotational_shell(params, S(**{**base, "rotational_path_strategy": "rotary_c_rings",
++                                                     "rotary_c_motion_mode": "no_pause_flat_rings",
++                                                     "rotary_c_max_deg_min": 600.0},
++                                                  thermal_min_layer_cycle_enabled=True,
++                                                  thermal_min_layer_cycle_min=3.0, thermal_min_dwell_s=120.0))
++dw_np = re.findall(r'THERMAL_DWELL L\d+', res_np.gcode)
++check("np_dwells_emitted", len(dw_np) >= 2, f"found {len(dw_np)}")
++check("np_beam_off_cycle", "beam off before dwell" in res_np.gcode and "re-arm beam after thermal dwell" in res_np.gcode)
++check("np_wire_cycle", "wire off before dwell" in res_np.gcode and "re-arm wire after thermal dwell" in res_np.gcode)
++
++print(json.dumps({"cases_total": 17, "failures": failures,
+                   "dwells": len(dw), "dwell_total_min": round(tot/60.0, 2)}, ensure_ascii=False))
+ if failures:
+     raise SystemExit(1)

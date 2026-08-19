@@ -1,0 +1,112 @@
+--- /mnt/data/ebam_v4299_input/EBAM_Gcode_Studio_v4_2_9_9_WINDOWS_EXPERIENCE_PROFILE_MERGE/requirements.txt	2026-07-06 09:42:53.000000000 +0000
++++ /mnt/data/EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/requirements.txt	2026-07-10 09:51:53.149172829 +0000
+@@ -1,4 +1,4 @@
+-streamlit>=1.28
++streamlit>=1.54,<2.0
+ numpy>=1.23
+ scipy>=1.11
+ trimesh>=3.23
+--- /mnt/data/ebam_v4299_input/EBAM_Gcode_Studio_v4_2_9_9_WINDOWS_EXPERIENCE_PROFILE_MERGE/check_dependencies.py	2026-07-06 09:42:53.000000000 +0000
++++ /mnt/data/EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/check_dependencies.py	2026-07-10 09:53:03.434089082 +0000
+@@ -1,12 +1,39 @@
+-mods = ['streamlit','numpy','scipy','trimesh','shapely','matplotlib','pandas','ezdxf']
+-missing=[]
+-for m in mods:
++from __future__ import annotations
++
++import importlib
++import re
++from importlib.metadata import PackageNotFoundError, version
++
++MODULES = ["streamlit", "numpy", "scipy", "trimesh", "shapely", "matplotlib", "pandas", "ezdxf"]
++MIN_VERSIONS = {"streamlit": (1, 54, 0)}
++
++
++def numeric_version_tuple(text: str) -> tuple[int, ...]:
++    parts = [int(x) for x in re.findall(r"\d+", text)[:3]]
++    return tuple(parts + [0] * (3 - len(parts)))
++
++
++missing: list[str] = []
++for module_name in MODULES:
+     try:
+-        __import__(m)
+-        print(f'OK: {m}')
+-    except Exception as e:
+-        print(f'MISSING/ERROR: {m}: {e}')
+-        missing.append(m)
++        importlib.import_module(module_name)
++        try:
++            installed = version(module_name)
++        except PackageNotFoundError:
++            installed = "unknown"
++        minimum = MIN_VERSIONS.get(module_name)
++        if minimum and installed != "unknown" and numeric_version_tuple(installed) < minimum:
++            print(
++                f"TOO OLD: {module_name} {installed}; required >= "
++                + ".".join(str(x) for x in minimum)
++            )
++            missing.append(module_name)
++        else:
++            print(f"OK: {module_name} {installed}")
++    except Exception as exc:
++        print(f"MISSING/ERROR: {module_name}: {exc}")
++        missing.append(module_name)
++
+ if missing:
+-    raise SystemExit('Missing modules: ' + ', '.join(missing))
+-print('All dependencies are installed.')
++    raise SystemExit("Missing or incompatible modules: " + ", ".join(missing))
++print("All dependencies are installed and compatible.")
+--- /mnt/data/ebam_v4299_input/EBAM_Gcode_Studio_v4_2_9_9_WINDOWS_EXPERIENCE_PROFILE_MERGE/run_windows.bat	2026-07-06 09:42:53.000000000 +0000
++++ /mnt/data/EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/run_windows.bat	2026-07-10 09:52:40.676245011 +0000
+@@ -1,10 +1,10 @@
+ @echo off
+ setlocal EnableExtensions EnableDelayedExpansion
+ cd /d "%~dp0"
+-title EBAM G-code Studio v4.2.9.6 launcher
++title EBAM G-code Studio v4.2.9.10 launcher
+ 
+ echo ================================================
+-echo EBAM G-code Studio v4.2.9.6 - robust Windows launcher
++echo EBAM G-code Studio v4.2.9.10 - robust Windows launcher
+ echo ================================================
+ echo.
+ echo This launcher avoids the Windows py launcher if it is broken.
+--- /mnt/data/ebam_v4299_input/EBAM_Gcode_Studio_v4_2_9_9_WINDOWS_EXPERIENCE_PROFILE_MERGE/run_windows_ROBUST.bat	2026-07-06 09:42:53.000000000 +0000
++++ /mnt/data/EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/run_windows_ROBUST.bat	2026-07-10 09:52:40.676611780 +0000
+@@ -1,10 +1,10 @@
+ @echo off
+ setlocal EnableExtensions EnableDelayedExpansion
+ cd /d "%~dp0"
+-title EBAM G-code Studio v4.2.9.6 launcher
++title EBAM G-code Studio v4.2.9.10 launcher
+ 
+ echo ================================================
+-echo EBAM G-code Studio v4.2.9.6 - robust Windows launcher
++echo EBAM G-code Studio v4.2.9.10 - robust Windows launcher
+ echo ================================================
+ echo.
+ echo This launcher avoids the Windows py launcher if it is broken.
+--- /mnt/data/ebam_v4299_input/EBAM_Gcode_Studio_v4_2_9_9_WINDOWS_EXPERIENCE_PROFILE_MERGE/run_windows_ASCII_SAFE.bat	2026-07-06 09:42:53.000000000 +0000
++++ /mnt/data/EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/run_windows_ASCII_SAFE.bat	2026-07-10 09:52:40.676910632 +0000
+@@ -5,7 +5,7 @@
+ title EBAM G-code Studio launcher
+ 
+ echo ===============================================
+-echo EBAM G-code Studio v4.2.9.6 - Windows SAFE launcher
++echo EBAM G-code Studio v4.2.9.10 - Windows SAFE launcher
+ echo ===============================================
+ echo.
+ 
+--- /mnt/data/ebam_v4299_input/EBAM_Gcode_Studio_v4_2_9_9_WINDOWS_EXPERIENCE_PROFILE_MERGE/run_windows_OFFLINE_EXISTING_VENV.bat	2026-07-06 09:42:53.000000000 +0000
++++ /mnt/data/EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/run_windows_OFFLINE_EXISTING_VENV.bat	2026-07-10 09:53:04.575551343 +0000
+@@ -11,7 +11,7 @@
+ echo.
+ 
+ if not exist ".venv\Scripts\python.exe" goto NO_VENV
+-".venv\Scripts\python.exe" -c "import streamlit, numpy, scipy, trimesh, shapely, matplotlib, pandas, ezdxf; print('Dependencies OK')"
++".venv\Scripts\python.exe" check_dependencies.py
+ if errorlevel 1 goto BAD_VENV
+ ".venv\Scripts\python.exe" desktop_launcher.py
+ pause

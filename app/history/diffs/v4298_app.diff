@@ -1,0 +1,58 @@
+--- orig_v4297/EBAM_Gcode_Studio_v4_2_9_7_WINDOWS_C_CONTINUOUS_CONTROLS/app.py	2026-07-08 09:28:39.000000000 +0000
++++ test_v4297/EBAM_Gcode_Studio_v4_2_9_7_WINDOWS_C_CONTINUOUS_CONTROLS/app.py	2026-07-08 15:19:55.783717665 +0000
+@@ -26,8 +26,8 @@
+     _section_radii_from_polygons_for_rotary_c
+ )
+ 
+-st.set_page_config(page_title="EBAM G-Code Studio v4.2.9.7", layout="wide")
+-st.title("EBAM G-Code Studio v4.2.9.7")
++st.set_page_config(page_title="EBAM G-Code Studio v4.2.9.8", layout="wide")
++st.title("EBAM G-Code Studio v4.2.9.8")
+ st.caption("Простой и расширенный режимы • расчёт • предпросмотр • G-code • обратный анализ")
+ 
+ st.info("Стартовый расчёт для EBAM. Перед полной деталью: предпросмотр, TEST Z10–15 мм, сухой прогон, проверка W-ретракта.")
+@@ -277,7 +277,7 @@
+         zf.writestr(f"ebam_settings_v4291_{suffix}.json", settings_json)
+         zf.writestr(
+             "README_RESULT_RU.txt",
+-            "EBAM G-Code Studio v4.2.9.7\n"
++            "EBAM G-Code Studio v4.2.9.8\n"
+             "Комплект результата: G-code, таблица слоёв, аудит и JSON-настройки.\n"
+             "Перед реальной наплавкой: viewer/simulation -> сухой прогон без луча и проволоки -> проверка W -> TEST Z10-15 мм.\n"
+         )
+@@ -490,7 +490,7 @@
+ def _wire_for_feed(settings: ProcessSettings, feed_mm_min: float, ratio: float = 0.0) -> float:
+     """Wire feed E2 from the same rule used by core.layer_parameters().
+ 
+-    v4.2.9.7 supports operator wire mode:
++    v4.2.9.8 supports operator wire mode:
+     - auto: recalculate E2 from F, Z-step and hatch/radial step;
+     - manual_constant: use one fixed E2;
+     - manual_bottom_top: interpolate E2 over height.
+@@ -573,7 +573,7 @@
+ def _rotary_c_radius_limit_info(summary: dict, settings: ProcessSettings) -> dict:
+     """Choose the radius used for the UI-level C feed limiter.
+ 
+-    v4.2.9.7 separates two meanings that were previously mixed:
++    v4.2.9.8 separates two meanings that were previously mixed:
+     - rotary_c_min_radius_mm is only a warning threshold for small radii;
+     - the C limiter uses the real/estimated minimum toolpath radius when geometry is known.
+ 
+@@ -718,7 +718,7 @@
+ def _apply_rotary_c_feed_limit_to_settings(summary: dict, settings: ProcessSettings):
+     """Apply C-axis speed cap to visible/global F when rotary C auto-limit is enabled.
+ 
+-    v4.2.9.7 applies the C limit before the calculation table and before G-code generation.
++    v4.2.9.8 applies the C limit before the calculation table and before G-code generation.
+     Therefore every downstream value is recalculated from effective F: E0, E2,
+     J/mm, J/mm3, time estimate and warnings. The generator still keeps per-ring
+     protection as a second safety layer.
+@@ -1181,7 +1181,7 @@
+             rotary_c_min_radius_mm = st.number_input(
+                 "Предупреждать радиус ниже, мм (не ограничивает F при известной геометрии)",
+                 min_value=0.1, max_value=500.0, value=18.0, step=1.0,
+-                help="Порог предупреждения для малых C-радиусов. В v4.2.9.7 он не режет F, если программа знает реальные радиусы колец; C-лимит считает по реальному Rmin траектории. Для STL/неизвестной геометрии может использоваться как осторожный fallback.",
++                help="Порог предупреждения для малых C-радиусов. В v4.2.9.8 он не режет F, если программа знает реальные радиусы колец; C-лимит считает по реальному Rmin траектории. Для STL/неизвестной геометрии может использоваться как осторожный fallback.",
+                 key=f"{key_prefix}_rmin",
+             )
+         rotary_c_auto_limit_feed = st.checkbox("Автоограничивать F по лимиту C", value=True, key=f"{key_prefix}_autof")

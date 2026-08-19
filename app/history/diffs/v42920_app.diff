@@ -1,0 +1,283 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_19_FLANGE_FAMILY/app.py	2026-07-15 14:29:26.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_19_FLANGE_FAMILY/app.py	2026-07-16 04:08:09.347754872 +0000
+@@ -392,16 +392,47 @@
+         passes_per_layer = max(1.0, radial_width / radial_step)
+         if c_like:
+             if str(getattr(settings, "rotary_c_motion_mode", "separate_rings")).strip().lower() == "no_pause_flat_rings":
+-                # No-pause C mode has one continuous E0/E2 activation. Estimate from real circumference.
+-                radius_est = max(0.5 * min(size_x, size_y) - 2.0, 1.0)
+-                transition_deg = max(0.0, float(getattr(settings, "rotary_c_transition_angle_deg", 17.0) or 0.0))
+-                path_len = n_layers * 2.0 * math.pi * radius_est + max(0, n_layers - 1) * (transition_deg / 360.0) * 2.0 * math.pi * radius_est
++                # No-pause C: beam/wire stay on, but the generator still deposits MANY
++                # concentric rings per layer (radial fill from inner to outer radius),
++                # NOT one ring per layer. The old estimate modelled a single ring at
++                # radius_est and ignored the C speed cap, under-counting time ~19x on a
++                # flange (real 4118 rings vs estimated 219). We now sum real ring time
++                # over the concentric radii, applying the C-axis speed limit per radius.
++                # Radial extent for the concentric-ring fill. Use the part's actual
++                # outer radius (bounding box) rather than the volume-equivalent radius,
++                # which underestimates a flat disc's radius and thus the ring count.
++                r_outer = max(0.5 * max(size_x, size_y), radial_width, radial_step)
++                r_inner = max(0.0, float(getattr(settings, "rotary_c_min_radius_mm", 0.0) or 0.0))
++                if r_inner >= r_outer:
++                    r_inner = 0.0
++                rings_per_layer = max(1, int(math.ceil((r_outer - r_inner) / max(radial_step, 1e-9))))
+                 avg_f = max((settings.feed_bottom_mm_min + settings.feed_top_mm_min) * 0.5, 1e-9)
+-                active_s = path_len / max(avg_f / 60.0, 1e-9)
++                c_max = float(getattr(settings, "rotary_c_max_deg_min", 2100.0) or 2100.0)
++                c_limit_on = bool(getattr(settings, "rotary_c_auto_limit_feed", True))
++                transition_deg = max(0.0, float(getattr(settings, "rotary_c_transition_angle_deg", 17.0) or 0.0))
++                # Sum ring time across the concentric radii of one layer, then x layers.
++                one_layer_s = 0.0
++                one_layer_path = 0.0
++                for k in range(rings_per_layer):
++                    r_k = r_inner + (k + 0.5) * radial_step
++                    if r_k <= 1e-6:
++                        continue
++                    circ = 2.0 * math.pi * r_k
++                    # linear feed actually usable at this radius under the C cap
++                    v_lin = avg_f / 60.0  # mm/s requested
++                    if c_limit_on:
++                        c_req = 180.0 * avg_f / max(math.pi * r_k, 1e-9)  # deg/min needed
++                        if c_req > c_max:
++                            v_lin = (c_max * math.pi * r_k / 180.0) / 60.0  # clamped mm/s
++                    one_layer_path += circ + (transition_deg / 360.0) * circ
++                    one_layer_s += (circ + (transition_deg / 360.0) * circ) / max(v_lin, 1e-9)
++                active_s = one_layer_s * n_layers
++                path_len = one_layer_path * n_layers
+                 pause_s = 0.0 if bool(getattr(settings, "rotary_c_disable_layer_pauses", False)) else pause_s
+-                physical_passes = 1.0
+-                link_moves = max(0.0, n_layers - 1)
+-                strategy_note = "C без остановки: C360 на фиксированном Z + короткий C/Z-переход; E0/E2 не перезапускаются"
++                physical_passes = float(rings_per_layer * n_layers)
++                link_moves = max(0.0, float(rings_per_layer * n_layers - 1))
++                strategy_note = (f"C без остановки: {rings_per_layer} концентрических колец/слой x {n_layers} слоёв "
++                                 f"= {rings_per_layer * n_layers} колец; скорость каждого кольца ограничена столом C")
+             else:
+                 physical_passes = n_layers * passes_per_layer
+                 link_moves = 0.0
+@@ -860,7 +891,7 @@
+     new_settings = replace(settings, feed_bottom_mm_min=float(new_b), feed_top_mm_min=float(new_t))
+     return new_settings, _rotary_c_limit_status(summary, new_settings, info)
+ 
+-def _fit_settings_to_target_time(summary, base: ProcessSettings, target_s: float, fit_mode: str):
++def _fit_settings_to_target_time(summary, base: ProcessSettings, target_s: float, fit_mode: str, levers: dict | None = None):
+     """Return settings adjusted toward target total time and a human-readable plan.
+ 
+     v4.2 logic:
+@@ -870,11 +901,41 @@
+       conservative boundaries. It NEVER raises current_max_ma automatically:
+       current_max_ma is a user-selected equipment/process limit.
+ 
++    v4.2.9.20: selectable levers. `levers` is a dict describing which parameters
++    the operator ALLOWS the tuner to change, each with an optional hard limit:
++        {
++          "layer_height":   {"enabled": bool, "max": mm},      # thicker -> fewer layers
++          "radial_step":    {"enabled": bool, "max": mm},      # wider -> fewer rings
++          "c_speed":        {"enabled": bool, "max": deg_min}, # faster table -> faster
++          "current":        {"enabled": bool, "max": mA},      # caps fusible speed
++        }
++    E2 (wire) is ALWAYS dependent: it is recomputed from geometry x speed so the
++    deposited volume stays correct (prevents the over-feed that ruined earlier
++    parts). If a lever is disabled, the tuner keeps that parameter at its base
++    value. If the allowed levers cannot reach the target, the plan says so
++    honestly and reports the real achievable minimum/maximum time.
++
+     Wire maximum remains a warning threshold, not a hard clamp, because the real
+     feeder capability is user-defined by the user/operator.
+     """
+     target_s = float(target_s or 0.0)
++    lv = levers or {}
++    def _lever(name, default_enabled):
++        d = lv.get(name, {}) if isinstance(lv, dict) else {}
++        return bool(d.get("enabled", default_enabled)), d.get("max", None)
++    # Which levers may the tuner move? Defaults preserve legacy behaviour per mode.
++    full_process = ("full" in fit_mode) or ("all" in fit_mode) or ("process" in fit_mode)
++    aggressive = full_process or ("layer" in fit_mode) or ("hatch" in fit_mode) or ("z" in fit_mode)
++    allow_layer, cap_layer = _lever("layer_height", aggressive)
++    allow_step, cap_step = _lever("radial_step", aggressive)
++    allow_cspeed, cap_cspeed = _lever("c_speed", False)
++    allow_current, cap_current = _lever("current", False)
+     out = replace(base, target_total_time_s=max(0.0, target_s), target_time_mode=fit_mode)
++    # Apply user hard caps to the starting point where given.
++    if allow_current and cap_current is not None:
++        out = replace(out, current_max_ma=float(cap_current))
++    if allow_cspeed and cap_cspeed is not None:
++        out = replace(out, rotary_c_max_deg_min=float(cap_cspeed))
+     base_eta = _estimate_time_before_generation(summary, out)
+     plan = {
+         "enabled": target_s > 0.0,
+@@ -911,12 +972,26 @@
+     hatch_min = 0.30
+     layer_max_quality, hatch_max_quality = 0.60, 3.00
+     layer_max_extreme, hatch_max_extreme = 0.90, 4.50
+-    full_process = ("full" in fit_mode) or ("all" in fit_mode) or ("process" in fit_mode)
+-    aggressive = full_process or ("layer" in fit_mode) or ("hatch" in fit_mode) or ("z" in fit_mode)
+     if full_process:
+         # Experimental wider range. The UI will warn about quality loss.
+         layer_max_extreme = 1.20
+         hatch_max_extreme = 6.00
++    # v4.2.9.20: honour user hard caps on the geometric levers. A disabled lever is
++    # pinned to its base value (min==max==base) so the loop cannot move it.
++    if allow_layer:
++        if cap_layer is not None:
++            layer_max_extreme = min(layer_max_extreme, float(cap_layer))
++            layer_max_quality = min(layer_max_quality, float(cap_layer))
++    else:
++        layer_min = layer_max_quality = layer_max_extreme = float(base.layer_height)
++    if allow_step:
++        if cap_step is not None:
++            hatch_max_extreme = min(hatch_max_extreme, float(cap_step))
++            hatch_max_quality = min(hatch_max_quality, float(cap_step))
++    else:
++        hatch_min = hatch_max_quality = hatch_max_extreme = float(base.hatch_spacing)
++    # geometry levers actually usable this run
++    geo_enabled = allow_layer or allow_step
+ 
+     # Energy range used only by full_process. Reducing J/mm is a last resort to
+     # let F rise under the selected current limit; increasing it does not help time,
+@@ -966,21 +1041,26 @@
+                     out.feed_bottom_mm_min = min(out.feed_bottom_mm_min * min(ratio, 1.20), max(feed_min, min(feed_hard_max, fcap0)))
+                     out.feed_top_mm_min = min(out.feed_top_mm_min * min(ratio, 1.20), max(feed_min, min(feed_hard_max, fcap1)))
+ 
+-            if aggressive:
++            if geo_enabled:
+                 # Increase bead productivity geometrically. This is what really reduces
+                 # layer count / path density, but it may worsen geometry and surface.
++                # Each lever moves only if the operator enabled it.
+                 geom_step = min(math.sqrt(ratio), 1.18 if not full_process else 1.25)
+-                out.layer_height = min(out.layer_height * geom_step, layer_max_extreme)
+-                out.hatch_spacing = min(out.hatch_spacing * geom_step, hatch_max_extreme)
++                if allow_layer:
++                    out.layer_height = min(out.layer_height * geom_step, layer_max_extreme)
++                if allow_step:
++                    out.hatch_spacing = min(out.hatch_spacing * geom_step, hatch_max_extreme)
+         else:
+             # Need longer time.
+             slow_step = max(ratio, 0.65)
+             out.feed_bottom_mm_min = max(out.feed_bottom_mm_min * slow_step, feed_min)
+             out.feed_top_mm_min = max(out.feed_top_mm_min * slow_step, feed_min)
+-            if aggressive:
++            if geo_enabled:
+                 geom_step = max(math.sqrt(max(ratio, 0.20)), 0.82 if not full_process else 0.75)
+-                out.layer_height = max(out.layer_height * geom_step, layer_min)
+-                out.hatch_spacing = max(out.hatch_spacing * geom_step, hatch_min)
++                if allow_layer:
++                    out.layer_height = max(out.layer_height * geom_step, layer_min)
++                if allow_step:
++                    out.hatch_spacing = max(out.hatch_spacing * geom_step, hatch_min)
+             if full_process:
+                 # If still too fast after reducing speed/geometry, add thermal pauses.
+                 eta2 = _estimate_time_before_generation(summary, out)
+@@ -992,12 +1072,47 @@
+                     out.layer_pause_bottom_s = min(8.0, out.layer_pause_bottom_s + add_per_layer * 0.65)
+                     out.layer_pause_top_s = min(12.0, out.layer_pause_top_s + add_per_layer)
+ 
++    # For rotary C strategies the radial step is what the estimator/generator use,
++    # so keep it in sync with the hatch lever when the step lever is enabled.
++    if allow_step and _rotary_c_like_strategy(out):
++        out = replace(out, rotational_radial_step_mm=float(out.hatch_spacing))
++
+     adj_eta = _estimate_time_before_generation(summary, out)
+     plan["adjusted_total_s"] = adj_eta["total_s"]
+     err_pct = 100.0 * (adj_eta["total_s"] - target_s) / max(target_s, 1.0)
+     plan["error_pct"] = err_pct
+     plan["possible"] = abs(err_pct) <= 18.0
+     plan["severity"] = "ok" if abs(err_pct) <= 10.0 else ("warn" if abs(err_pct) <= 25.0 else "bad")
++    # v4.2.9.20: record which levers were active and the achievable bound, so the UI
++    # can tell the operator exactly why a target could not be met and what to relax.
++    plan["levers_active"] = {
++        "layer_height": allow_layer, "radial_step": allow_step,
++        "c_speed": allow_cspeed, "current": allow_current,
++    }
++    if not plan["possible"] and adj_eta["total_s"] > target_s:
++        # Target too short for the ALLOWED levers. Name the disabled levers that would help.
++        suggestions = []
++        if not allow_layer:
++            suggestions.append("высоту слоя")
++        if not allow_step:
++            suggestions.append("шаг колец")
++        if not allow_cspeed:
++            suggestions.append("скорость стола C")
++        if not allow_current:
++            suggestions.append("лимит тока пучка")
++        plan["min_achievable_s"] = adj_eta["total_s"]
++        if suggestions:
++            plan["messages"].append(
++                "В заданное время не уложиться разрешёнными параметрами. Минимально достижимо "
++                f"≈ {adj_eta['total_s']/3600:.1f} ч. Чтобы ускорить дальше, разрешите менять: "
++                + ", ".join(suggestions) + "."
++            )
++        else:
++            plan["messages"].append(
++                "Все рычаги уже разрешены, но физический минимум при ваших пределах "
++                f"≈ {adj_eta['total_s']/3600:.1f} ч. Для меньшего времени поднимите пределы "
++                "(ток/скорость стола) или огрубите геометрию (выше слой / шире шаг)."
++            )
+     plan["applied_settings"] = {
+         "layer_height": out.layer_height,
+         "hatch_spacing": out.hatch_spacing,
+@@ -1882,18 +1997,18 @@
+             st.info("Внешние overrides не блокируются и не сбрасываются: приложение не вставляет M49/M50. WIRE override 100% — только рекомендация для воспроизводимой калибровки; регулировка остаётся доступной оператору.")
+ 
+         st.header("10. Целевое время")
+-        target_time_enabled = st.checkbox("Задать желаемое время изготовления", value=False, help="Программа подстроит расчётные параметры и покажет, реально ли уложиться в выбранное время.")
++        target_time_enabled = st.checkbox("Задать желаемое время изготовления", value=False, help="Программа подстроит РАЗРЕШЁННЫЕ параметры и честно покажет, реально ли уложиться в выбранное время.")
+         col_th, col_tm = st.columns(2)
+         with col_th:
+             target_hours = st.number_input("Цель, часы", min_value=0, max_value=200, value=0, step=1, disabled=not target_time_enabled)
+         with col_tm:
+             target_minutes = st.number_input("Цель, минуты", min_value=0, max_value=59, value=30, step=5, disabled=not target_time_enabled)
+         target_fit_mode_ru = st.selectbox(
+-            "Как подстраивать",
++            "Базовый режим подстройки",
+             ["Только скорость F", "Скорость + Z-шаг + шаг дорожек", "Все необходимые параметры (экспериментально)"],
+             index=2,
+             disabled=not target_time_enabled,
+-            help="В полном режиме программа может менять F, Z-шаг, шаг дорожек, паузы и Дж/мм. Лимит тока пучка она не повышает сама — его задаёт оператор."
++            help="Задаёт стартовый набор. Ниже можно точно выбрать, какие рычаги разрешено крутить и их жёсткие пределы."
+         )
+         if target_fit_mode_ru.startswith("Только"):
+             target_fit_mode = "feed_only"
+@@ -1903,6 +2018,32 @@
+             target_fit_mode = "full_process"
+         target_total_s = (int(target_hours) * 3600 + int(target_minutes) * 60) if target_time_enabled else 0
+ 
++        # v4.2.9.20: selectable regulation levers. Each lever: allow to change + hard limit.
++        # E2 (wire) is ALWAYS dependent (computed from geometry x speed) to prevent over-feed.
++        time_levers = None
++        if target_time_enabled:
++            st.markdown("**Разрешённые рычаги регулировки времени** (что программе можно менять)")
++            st.caption("Скорость проволоки E2 всегда считается из объёма (высота × шаг × скорость), "
++                       "чтобы не было переподачи. Отметьте, что разрешено крутить, и задайте жёсткие пределы. "
++                       "Зафиксированное не трогается; если разрешённого не хватит — программа честно скажет минимум.")
++            lc1, lc2 = st.columns(2)
++            with lc1:
++                lever_layer_on = st.checkbox("Высота слоя", value=True, help="Выше слой → меньше слоёв → быстрее. Влияет на качество поверхности.")
++                lever_layer_max = st.number_input("макс. высота слоя, мм", min_value=0.1, max_value=5.0, value=1.5, step=0.1, disabled=not lever_layer_on, format="%.2f")
++                lever_step_on = st.checkbox("Шаг колец (ширина)", value=True, help="Шире шаг → меньше колец → быстрее. Слишком широко → непроплав между кольцами.")
++                lever_step_max = st.number_input("макс. шаг колец, мм", min_value=0.3, max_value=10.0, value=4.0, step=0.1, disabled=not lever_step_on, format="%.2f")
++            with lc2:
++                lever_cspeed_on = st.checkbox("Скорость стола C", value=True, help="Быстрее вращение → быстрее кольцо. Ограничено паспортом привода.")
++                lever_cspeed_max = st.number_input("макс. скорость C, град/мин", min_value=50.0, max_value=5000.0, value=600.0, step=50.0, disabled=not lever_cspeed_on, format="%.0f")
++                lever_current_on = st.checkbox("Ток пучка E0", value=False, help="Выше ток → можно быстрее с проплавом. Задаётся оператором по возможностям установки.")
++                lever_current_max = st.number_input("макс. ток E0, мА", min_value=1.0, max_value=200.0, value=50.0, step=1.0, disabled=not lever_current_on, format="%.0f")
++            time_levers = {
++                "layer_height": {"enabled": bool(lever_layer_on), "max": float(lever_layer_max)},
++                "radial_step": {"enabled": bool(lever_step_on), "max": float(lever_step_max)},
++                "c_speed": {"enabled": bool(lever_cspeed_on), "max": float(lever_cspeed_max)},
++                "current": {"enabled": bool(lever_current_on), "max": float(lever_current_max)},
++            }
++
+     settings = ProcessSettings(
+         voltage_kv=voltage,
+         layer_height=layer_height,
+@@ -1984,7 +2125,7 @@
+     )
+     time_plan = {"enabled": False, "messages": [], "target_s": 0.0, "base_total_s": 0.0, "adjusted_total_s": 0.0, "possible": True, "severity": "ok"}
+     if target_time_enabled and target_total_s > 0:
+-        settings, time_plan = _fit_settings_to_target_time(summary, settings, float(target_total_s), target_fit_mode)
++        settings, time_plan = _fit_settings_to_target_time(summary, settings, float(target_total_s), target_fit_mode, time_levers)
+     settings, c_limit_info = _apply_rotary_c_feed_limit_to_settings(summary, settings)
+     if c_limit_info:
+         time_plan["c_limit_info"] = c_limit_info

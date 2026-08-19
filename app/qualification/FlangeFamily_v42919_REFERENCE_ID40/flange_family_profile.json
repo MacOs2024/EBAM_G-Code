@@ -1,0 +1,56 @@
+{
+  "source_name": "Flange1(2).STL",
+  "build_axis_original": "Y",
+  "original_size_mm": [
+    164.0,
+    47.50000159442425,
+    164.0
+  ],
+  "oriented_size_mm": [
+    164.0,
+    164.0,
+    47.50000159442425
+  ],
+  "height_mm": 47.50000159442425,
+  "center_original_mm": [
+    82.0,
+    23.900977291166782,
+    82.0
+  ],
+  "r_inner_bottom_mm": 20.000007180207632,
+  "r_outer_bottom_mm": 82.00000970089991,
+  "r_inner_top_mm": 20.000007180207632,
+  "r_outer_top_mm": 29.000181190257287,
+  "breakpoints_mm": [
+    22.999999687075615
+  ],
+  "zones": [
+    {
+      "zone_index": 1,
+      "zone": "FLANGE_NARROW",
+      "z_bottom_mm": 0.0,
+      "z_top_mm": 22.999999687075615,
+      "height_mm": 22.999999687075615,
+      "r_inner_mid_mm": 20.000007180207632,
+      "r_outer_mid_mm": 82.00000970089991,
+      "radial_width_mm": 62.00000252069228,
+      "section_inner_spread_mm": 0.05286852233635386,
+      "section_outer_spread_mm": 0.11239310996029417
+    },
+    {
+      "zone_index": 2,
+      "zone": "HUB_WIDE",
+      "z_bottom_mm": 22.999999687075615,
+      "z_top_mm": 47.50000159442425,
+      "height_mm": 24.500001907348633,
+      "r_inner_mid_mm": 20.000007180207632,
+      "r_outer_mid_mm": 33.50000487773647,
+      "radial_width_mm": 13.49999769752884,
+      "section_inner_spread_mm": 0.055145636074342974,
+      "section_outer_spread_mm": 0.09652837963339067
+    }
+  ],
+  "mesh_volume_mm3": 512120.5743236169,
+  "axisymmetry_error_fraction": 0.0,
+  "is_watertight": true
+}

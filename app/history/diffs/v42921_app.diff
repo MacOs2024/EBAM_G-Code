@@ -1,0 +1,88 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_20_TIME_LEVERS/app.py	2026-07-16 04:08:09.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_20_TIME_LEVERS/app.py	2026-07-16 23:19:55.029502752 +0000
+@@ -901,7 +901,7 @@
+       conservative boundaries. It NEVER raises current_max_ma automatically:
+       current_max_ma is a user-selected equipment/process limit.
+ 
+-    v4.2.9.20: selectable levers. `levers` is a dict describing which parameters
++    v4.2.9.21: selectable levers. `levers` is a dict describing which parameters
+     the operator ALLOWS the tuner to change, each with an optional hard limit:
+         {
+           "layer_height":   {"enabled": bool, "max": mm},      # thicker -> fewer layers
+@@ -976,7 +976,7 @@
+         # Experimental wider range. The UI will warn about quality loss.
+         layer_max_extreme = 1.20
+         hatch_max_extreme = 6.00
+-    # v4.2.9.20: honour user hard caps on the geometric levers. A disabled lever is
++    # v4.2.9.21: honour user hard caps on the geometric levers. A disabled lever is
+     # pinned to its base value (min==max==base) so the loop cannot move it.
+     if allow_layer:
+         if cap_layer is not None:
+@@ -1083,7 +1083,7 @@
+     plan["error_pct"] = err_pct
+     plan["possible"] = abs(err_pct) <= 18.0
+     plan["severity"] = "ok" if abs(err_pct) <= 10.0 else ("warn" if abs(err_pct) <= 25.0 else "bad")
+-    # v4.2.9.20: record which levers were active and the achievable bound, so the UI
++    # v4.2.9.21: record which levers were active and the achievable bound, so the UI
+     # can tell the operator exactly why a target could not be met and what to relax.
+     plan["levers_active"] = {
+         "layer_height": allow_layer, "radial_step": allow_step,
+@@ -1408,6 +1408,29 @@
+                 key=f"{key_prefix}_rmin",
+             )
+         rotary_c_auto_limit_feed = st.checkbox("Автоограничивать F по лимиту C", value=True, key=f"{key_prefix}_autof")
++        st.markdown("**Компенсация подачи по радиусу** (устраняет разгон проволоки на широких кольцах)")
++        rotary_c_constant_velocity = st.checkbox(
++            "Стабилизировать скорость наплавки по радиусу (constant velocity)", value=False,
++            key=f"{key_prefix}_cv",
++            help="Проблема (Flange1_R6): при постоянной C внешние кольца идут в 3-4 раза быстрее по ободу, и подача проволоки E2 разгоняется вслед за скоростью (до предела), а мощность не поспевает — проволока лезет из ванны. Этот режим держит линейную скорость наплавки почти постоянной: на малых радиусах C у максимума, к краю C плавно снижается (на 2-3% на кольцо), а где C упёрлась в нижний предел — шаг колец уплотняется, чтобы E2 не рос. E2 остаётся в комфортном диапазоне по всей детали.")
++        rc_cv1, rc_cv2 = st.columns(2)
++        with rc_cv1:
++            rotary_c_wire_comfort_mm_s = st.number_input(
++                "Комфортная подача E2, мм/с", min_value=1.0, max_value=60.0, value=29.0, step=0.5,
++                disabled=not rotary_c_constant_velocity, key=f"{key_prefix}_e2comf",
++                help="Скорость подачи проволоки, которую вы считаете стабильной (проволока уверенно в ванне). Из неё считается целевая линейная скорость наплавки по балансу объёма.")
++        with rc_cv2:
++            rotary_c_min_pitch_factor = st.number_input(
++                "Мин. коэффициент уплотнения шага", min_value=0.3, max_value=1.0, value=0.6, step=0.05,
++                disabled=not rotary_c_constant_velocity, key=f"{key_prefix}_pf",
++                help="На внешних кольцах, где стол упёрся в нижний лимит C, шаг колец уплотняется, чтобы удержать E2. Это нижняя граница уплотнения (0.6 = шаг не тесней 60% исходного).")
++        st.session_state[f"_cv_settings_{key_prefix}"] = {
++            "rotary_c_constant_velocity": bool(rotary_c_constant_velocity),
++            "rotary_c_wire_comfort_mm_s": float(rotary_c_wire_comfort_mm_s),
++            "rotary_c_min_pitch_factor": float(rotary_c_min_pitch_factor),
++            "rotary_c_shrink_pitch_at_floor": True,
++        }
++        st.session_state["_cv_settings_active"] = st.session_state[f"_cv_settings_{key_prefix}"]
+         rotary_c_seam_scatter_deg = st.number_input(
+             "Рассеивание шва, град/кольцо (0 = выкл)", min_value=-179.0, max_value=179.0, value=0.0, step=0.5,
+             help="Смещает стартовый угол каждого кольца (репозиция C при ВЫКЛЮЧЕННОМ луче), чтобы шов старт/стоп не накапливался на одной вертикали. Рекомендуется 137.5° (золотой угол). Работает в режиме относительных оборотов; в no-pause шов и так смещается углом перехода.",
+@@ -1694,6 +1717,9 @@
+         time_plan = {"enabled": False, "messages": [], "target_s": 0.0, "base_total_s": 0.0, "adjusted_total_s": 0.0, "possible": True, "severity": "ok"}
+         if target_time_enabled and target_total_s > 0:
+             settings, time_plan = _fit_settings_to_target_time(summary, settings, float(target_total_s), "full_process")
++        _cv_apply = st.session_state.get("_cv_settings_active") or {}
++        if _cv_apply.get("rotary_c_constant_velocity"):
++            settings = replace(settings, **_cv_apply)
+         settings, c_limit_info = _apply_rotary_c_feed_limit_to_settings(summary, settings)
+         if c_limit_info:
+             time_plan["c_limit_info"] = c_limit_info
+@@ -2018,7 +2044,7 @@
+             target_fit_mode = "full_process"
+         target_total_s = (int(target_hours) * 3600 + int(target_minutes) * 60) if target_time_enabled else 0
+ 
+-        # v4.2.9.20: selectable regulation levers. Each lever: allow to change + hard limit.
++        # v4.2.9.21: selectable regulation levers. Each lever: allow to change + hard limit.
+         # E2 (wire) is ALWAYS dependent (computed from geometry x speed) to prevent over-feed.
+         time_levers = None
+         if target_time_enabled:
+@@ -2126,6 +2152,9 @@
+     time_plan = {"enabled": False, "messages": [], "target_s": 0.0, "base_total_s": 0.0, "adjusted_total_s": 0.0, "possible": True, "severity": "ok"}
+     if target_time_enabled and target_total_s > 0:
+         settings, time_plan = _fit_settings_to_target_time(summary, settings, float(target_total_s), target_fit_mode, time_levers)
++    _cv_apply = st.session_state.get("_cv_settings_active") or {}
++    if _cv_apply.get("rotary_c_constant_velocity"):
++        settings = replace(settings, **_cv_apply)
+     settings, c_limit_info = _apply_rotary_c_feed_limit_to_settings(summary, settings)
+     if c_limit_info:
+         time_plan["c_limit_info"] = c_limit_info

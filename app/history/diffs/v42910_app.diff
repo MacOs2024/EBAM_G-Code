@@ -1,0 +1,370 @@
+--- /mnt/data/ebam_v4299_input/EBAM_Gcode_Studio_v4_2_9_9_WINDOWS_EXPERIENCE_PROFILE_MERGE/app.py	2026-07-09 14:46:31.000000000 +0000
++++ /mnt/data/EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/app.py	2026-07-10 09:41:39.230292279 +0000
+@@ -12,7 +12,7 @@
+ import numpy as np
+ 
+ from ebam_gcode_studio.core import (
+-    ProcessSettings, MATERIAL_LIBRARY,
++    APP_VERSION, ProcessSettings, MATERIAL_LIBRARY,
+     load_mesh_any, normalize_mesh, mesh_summary,
+     generate_from_mesh, generate_from_polygons_2d,
+     settings_to_json, settings_from_dict, recommend_settings_from_summary,
+@@ -27,8 +27,10 @@
+     _section_radii_from_polygons_for_rotary_c
+ )
+ 
+-st.set_page_config(page_title="EBAM G-Code Studio v4.2.9.9", layout="wide")
+-st.title("EBAM G-Code Studio v4.2.9.9")
++APP_FILE_TAG = APP_VERSION.replace(".", "")
++
++st.set_page_config(page_title=f"EBAM G-Code Studio {APP_VERSION}", layout="wide")
++st.title(f"EBAM G-Code Studio {APP_VERSION}")
+ st.caption("Простой и расширенный режимы • расчёт • предпросмотр • G-code • обратный анализ")
+ 
+ st.info("Стартовый расчёт для EBAM. Перед полной деталью: предпросмотр, TEST Z10–15 мм, сухой прогон, проверка W-ретракта.")
+@@ -67,6 +69,13 @@
+     "Шаг слоя Z, мм": "Высота подъёма между слоями. Большой Z-шаг ускоряет процесс, но повышает риск недоплава, грубой поверхности и тыкания проволоки.",
+     "Шаг дорожек, мм": "Расстояние между соседними траекториями. Это не физическая ширина валика, а шаг укладки дорожек.",
+     "Диаметр проволоки, мм": "Диаметр используемой проволоки. Нужен для расчёта площади сечения и подачи E2 в мм/с.",
++    "Коэффициент осаждения η": "Доля объёма поданной проволоки, которая фактически формирует полезный валик. 1.0 — верхняя оценка без потерь; лучше определять по калибровочному образцу.",
++    "Режим планировщика траектории": "G64 P/Q разрешает плавное сопряжение. G61/G61.1 могут замедлять или останавливать движение на границах сегментов. Режим станка по умолчанию не добавляет команду.",
++    "Допуск G64 P, мм": "Максимально допустимое отклонение траектории при сглаживании G64. Малое значение точнее, но может снижать скорость.",
++    "Naive CAM G64 Q, мм": "Q=0 отключает упрощение коротких почти коллинеарных сегментов. Для коротких C+Z переходов это безопаснее.",
++    "Команды E0/E2 в непрерывном C-режиме": "M68 совместим с текущей конфигурацией, но действует немедленно. M67 синхронизирован со следующим движением и разрешается только после подтверждения HAL.",
++    "Подтверждаю поддержку M67 в HAL": "Включать только после проверки, что motion.analog-out для E0/E2 действительно подключены в HAL вашей установки.",
++    "Допуск изменения радиуса в no-pause, мм": "Максимальное изменение радиуса по высоте, при котором фиксированный X ещё считается цилиндрическим. При превышении генерация блокируется, чтобы не получить неверную чашу/баллон.",
+     "Плотность, г/см³": "Плотность материала нужна для оценки массы, расхода проволоки и отчёта по детали.",
+     "Энергия низ, Дж/мм": "Целевая энергия на 1 мм траектории в нижней части детали. Влияет на расчёт тока E0.",
+     "Энергия верх, Дж/мм": "Целевая энергия на 1 мм траектории в верхней части детали. Можно снижать/повышать для компенсации накопления тепла.",
+@@ -272,13 +281,13 @@
+     """Pack G-code, layer table, audit and settings into one download."""
+     buf = io.BytesIO()
+     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+-        zf.writestr(f"ebam_generated_v4291_{suffix}.ngc", result.gcode)
+-        zf.writestr(f"ebam_layers_v4291_{suffix}.csv", result.layer_csv)
+-        zf.writestr(f"ebam_audit_v4291_{suffix}.txt", result.audit_text)
+-        zf.writestr(f"ebam_settings_v4291_{suffix}.json", settings_json)
++        zf.writestr(f"ebam_generated_{APP_FILE_TAG}_{suffix}.ngc", result.gcode)
++        zf.writestr(f"ebam_layers_{APP_FILE_TAG}_{suffix}.csv", result.layer_csv)
++        zf.writestr(f"ebam_audit_{APP_FILE_TAG}_{suffix}.txt", result.audit_text)
++        zf.writestr(f"ebam_settings_{APP_FILE_TAG}_{suffix}.json", settings_json)
+         zf.writestr(
+             "README_RESULT_RU.txt",
+-            "EBAM G-Code Studio v4.2.9.9\n"
++            f"EBAM G-Code Studio {APP_VERSION}\n"
+             "Комплект результата: G-code, таблица слоёв, аудит и JSON-настройки.\n"
+             "Перед реальной наплавкой: viewer/simulation -> сухой прогон без луча и проволоки -> проверка W -> TEST Z10-15 мм.\n"
+         )
+@@ -491,7 +500,7 @@
+ def _wire_for_feed(settings: ProcessSettings, feed_mm_min: float, ratio: float = 0.0) -> float:
+     """Wire feed E2 from the same rule used by core.layer_parameters().
+ 
+-    v4.2.9.9 supports operator wire mode:
++    v4.2.9.10 supports operator wire mode:
+     - auto: recalculate E2 from F, Z-step and hatch/radial step;
+     - manual_constant: use one fixed E2;
+     - manual_bottom_top: interpolate E2 over height.
+@@ -574,7 +583,7 @@
+ def _rotary_c_radius_limit_info(summary: dict, settings: ProcessSettings) -> dict:
+     """Choose the radius used for the UI-level C feed limiter.
+ 
+-    v4.2.9.9 separates two meanings that were previously mixed:
++    v4.2.9.10 separates two meanings that were previously mixed:
+     - rotary_c_min_radius_mm is only a warning threshold for small radii;
+     - the C limiter uses the real/estimated minimum toolpath radius when geometry is known.
+ 
+@@ -719,7 +728,7 @@
+ def _apply_rotary_c_feed_limit_to_settings(summary: dict, settings: ProcessSettings):
+     """Apply C-axis speed cap to visible/global F when rotary C auto-limit is enabled.
+ 
+-    v4.2.9.9 applies the C limit before the calculation table and before G-code generation.
++    v4.2.9.10 applies the C limit before the calculation table and before G-code generation.
+     Therefore every downstream value is recalculated from effective F: E0, E2,
+     J/mm, J/mm3, time estimate and warnings. The generator still keeps per-ring
+     protection as a second safety layer.
+@@ -1182,7 +1191,7 @@
+             rotary_c_min_radius_mm = st.number_input(
+                 "Предупреждать радиус ниже, мм (не ограничивает F при известной геометрии)",
+                 min_value=0.1, max_value=500.0, value=18.0, step=1.0,
+-                help="Порог предупреждения для малых C-радиусов. В v4.2.9.9 он не режет F, если программа знает реальные радиусы колец; C-лимит считает по реальному Rmin траектории. Для STL/неизвестной геометрии может использоваться как осторожный fallback.",
++                help="Порог предупреждения для малых C-радиусов. В v4.2.9.10 он не режет F, если программа знает реальные радиусы колец; C-лимит считает по реальному Rmin траектории. Для STL/неизвестной геометрии может использоваться как осторожный fallback.",
+                 key=f"{key_prefix}_rmin",
+             )
+         rotary_c_auto_limit_feed = st.checkbox("Автоограничивать F по лимиту C", value=True, key=f"{key_prefix}_autof")
+@@ -1304,7 +1313,7 @@
+         ["Контурные проходы", "Лучше форма края", "Сложнее для боковой проволоки", "Без них край грубее"],
+         ["W-ретракт", "Меньше хвостов", "При конфликте с M68 — опасно", "Без него больше хвосты"],
+     ]
+-    st.dataframe(pd.DataFrame(rows, columns=["Параметр", "Если увеличить", "Основной риск", "Если уменьшить"]), hide_index=True, use_container_width=True)
++    st.dataframe(pd.DataFrame(rows, columns=["Параметр", "Если увеличить", "Основной риск", "Если уменьшить"]), hide_index=True, width="stretch")
+ 
+ 
+ def build_settings(summary, mode, material_key, advanced_mode: bool = True):
+@@ -1485,6 +1494,13 @@
+             st.warning("Z-шаг выше 2 мм — экспериментальный режим. Проверять только через короткий TEST: резко растёт подача проволоки и риск недоплава/тыкания проволоки.")
+         hatch_spacing = st.number_input("Шаг дорожек, мм", min_value=0.2, max_value=10.0, value=float(recommended.hatch_spacing), step=0.05)
+         wire_d = st.number_input("Диаметр проволоки, мм", min_value=0.2, max_value=5.0, value=float(recommended.wire_diameter_mm), step=0.1)
++        deposition_efficiency = st.number_input(
++            "Коэффициент осаждения η", min_value=0.10, max_value=1.00,
++            value=float(getattr(recommended, "deposition_efficiency", 1.0)), step=0.01, format="%.3f",
++            help="Доля поданной проволоки, формирующая полезный валик. 1.0 сохраняет старую модель без потерь, но считается некалиброванной верхней оценкой."
++        )
++        if deposition_efficiency >= 0.999:
++            st.warning("η=1.000 — расчёт без потерь металла. Для абсолютной E2/толщины лучше определить η по короткому калибровочному образцу.")
+         wire_min = st.number_input("Нижняя контрольная подача проволоки, мм/с", min_value=0.0, max_value=200.0, value=float(recommended.wire_min_mm_s), step=0.1, help="Контрольная граница для предупреждения, не автоматический зажим G-code.")
+         wire_max = st.number_input("Верхняя контрольная подача проволоки, мм/с", min_value=0.1, max_value=200.0, value=float(recommended.wire_max_mm_s), step=0.5, help="Если расчётная подача выше этой границы, приложение предупредит. Саму подачу оно не обрежет.")
+         density = st.number_input("Плотность, г/см³", min_value=0.5, max_value=25.0, value=float(recommended.density_g_cm3), step=0.1)
+@@ -1567,6 +1583,11 @@
+         wire_feed_manual_mm_s = 0.0
+         wire_feed_bottom_mm_s = 0.0
+         wire_feed_top_mm_s = 0.0
++        path_control_mode = "g64_tolerance"
++        g64_naive_cam_q_mm = 0.0
++        analog_output_mode = "m68_compatible"
++        machine_m67_confirmed = False
++        rotary_c_radius_variation_tolerance_mm = 0.05
+         st.header("8. Полный набор стратегий проходов")
+         path_choices = FULL_PATH_PLAN_CHOICES
+         path_reco_index_full = path_choices.index(path_reco_choice) if path_reco_choice in path_choices else 0
+@@ -1681,6 +1702,58 @@
+         soft_finish = st.number_input("Мягкий финиш, мм", min_value=0.0, max_value=30.0, value=float(recommended.soft_finish_mm), step=0.1)
+         include_comments = st.checkbox("Комментарии в G-code", value=False, help="Выключайте для больших STL: файл будет меньше и быстрее загрузится в LinuxCNC.")
+ 
++        with st.expander("Контроллер, сглаживание и аналоговые E0/E2", expanded=(decoded_plan["special"] == "rotary_c")):
++            path_mode_ru = st.selectbox(
++                "Режим планировщика траектории",
++                ["G64 P/Q — плавное сопряжение", "Режим станка по умолчанию", "G61 — точная траектория", "G61.1 — точная остановка"],
++                index=0,
++                help="Для непрерывного C обычно нужен G64. G61/G61.1 могут замедлять или останавливать оси на границах блоков."
++            )
++            if path_mode_ru.startswith("G64"):
++                path_control_mode = "g64_tolerance"
++            elif path_mode_ru.startswith("Режим"):
++                path_control_mode = "machine_default"
++            elif path_mode_ru.startswith("G61.1"):
++                path_control_mode = "g61_1"
++            else:
++                path_control_mode = "g61"
++            pc1, pc2 = st.columns(2)
++            with pc1:
++                g64_tolerance = st.number_input(
++                    "Допуск G64 P, мм", min_value=0.0, max_value=10.0,
++                    value=float(recommended.g64_tolerance_mm), step=0.01, format="%.3f",
++                    disabled=(path_control_mode != "g64_tolerance")
++                )
++            with pc2:
++                g64_naive_cam_q_mm = st.number_input(
++                    "Naive CAM G64 Q, мм", min_value=0.0, max_value=10.0,
++                    value=0.0, step=0.01, format="%.3f",
++                    disabled=(path_control_mode != "g64_tolerance"),
++                    help="0 отключает упрощение коротких сегментов. Это безопаснее для короткого перехода C+Z."
++                )
++            analog_ru = st.selectbox(
++                "Команды E0/E2 в непрерывном C-режиме",
++                ["M68 — текущая совместимая схема", "M67 — синхронно со следующим движением"],
++                index=0,
++                help="M67 используйте только после проверки HAL. По умолчанию приложение сохраняет существующую M68-схему вашей установки."
++            )
++            analog_output_mode = "m67_synchronized" if analog_ru.startswith("M67") else "m68_compatible"
++            machine_m67_confirmed = st.checkbox(
++                "Подтверждаю поддержку M67 в HAL", value=False,
++                disabled=(analog_output_mode != "m67_synchronized"),
++                help="Без подтверждения генератор автоматически вернётся к M68, чтобы не выдавать неподдерживаемые команды."
++            )
++            rotary_c_radius_variation_tolerance_mm = st.number_input(
++                "Допуск изменения радиуса в no-pause, мм", min_value=0.0, max_value=10.0,
++                value=0.05, step=0.01, format="%.3f",
++                help="Если радиус по высоте меняется сильнее, фиксированный X даст неверную чашу/баллон, поэтому генерация блокируется."
++            )
++            if path_control_mode in ("g61", "g61_1") and rotary_c_motion_mode == "no_pause_flat_rings":
++                st.warning("G61/G61.1 конфликтует с целью C без остановок: на границах G-code возможны сильные замедления или остановка.")
++            if analog_output_mode == "m67_synchronized" and not machine_m67_confirmed:
++                st.info("M67 выбран, но не подтверждён: итоговый G-code безопасно останется на M68.")
++            st.info("Внешние overrides не блокируются и не сбрасываются: приложение не вставляет M49/M50. WIRE override 100% — только рекомендация для воспроизводимой калибровки; регулировка остаётся доступной оператору.")
++
+         st.header("10. Целевое время")
+         target_time_enabled = st.checkbox("Задать желаемое время изготовления", value=False, help="Программа подстроит расчётные параметры и покажет, реально ли уложиться в выбранное время.")
+         col_th, col_tm = st.columns(2)
+@@ -1708,6 +1781,7 @@
+         layer_height=layer_height,
+         hatch_spacing=hatch_spacing,
+         wire_diameter_mm=wire_d,
++        deposition_efficiency=float(deposition_efficiency),
+         wire_min_mm_s=wire_min,
+         wire_max_mm_s=wire_max,
+         density_g_cm3=density,
+@@ -1759,6 +1833,12 @@
+         rotary_c_disable_layer_pauses=bool(rotary_c_disable_layer_pauses),
+         rotary_c_disable_w_retract=bool(rotary_c_disable_w_retract),
+         rotary_c_disable_z_hop=bool(rotary_c_disable_z_hop),
++        rotary_c_radius_variation_tolerance_mm=float(rotary_c_radius_variation_tolerance_mm),
++        path_control_mode=str(path_control_mode),
++        g64_tolerance_mm=float(g64_tolerance),
++        g64_naive_cam_q_mm=float(g64_naive_cam_q_mm),
++        analog_output_mode=str(analog_output_mode),
++        machine_m67_confirmed=bool(machine_m67_confirmed),
+         wire_feed_mode=str(wire_feed_mode),
+         wire_feed_manual_mm_s=float(wire_feed_manual_mm_s),
+         wire_feed_bottom_mm_s=float(wire_feed_bottom_mm_s),
+@@ -2230,7 +2310,9 @@
+                 ("Размер Y, мм", f"{bbox.get('size_y', 0.0):.3f}"),
+                 ("Размер Z, мм", f"{bbox.get('size_z', 0.0):.3f}"),
+             ])
+-        st.table(pd.DataFrame(brief_rows, columns=["Что", "Значение"]).set_index("Что"))
++        brief_df = pd.DataFrame(brief_rows, columns=["Что", "Значение"])
++        brief_df["Значение"] = brief_df["Значение"].map(str)
++        st.table(brief_df.set_index("Что"))
+ 
+         draw_reverse_gcode_preview(analysis)
+ 
+@@ -2256,23 +2338,23 @@
+         st.markdown("### W-перемещения")
+         w_df = _reverse_w_dataframe(analysis.get("w_moves", []))
+         if not w_df.empty:
+-            st.dataframe(w_df.head(1000), use_container_width=True, hide_index=True)
++            st.dataframe(w_df.head(1000), width="stretch", hide_index=True)
+         else:
+             st.info("W-перемещений не найдено.")
+ 
+         st.markdown("### Таблица восстановленных сегментов")
+         seg_df = _reverse_segments_dataframe(analysis.get("segments", []))
+         if not seg_df.empty:
+-            st.dataframe(seg_df.head(2000), use_container_width=True, hide_index=True)
++            st.dataframe(seg_df.head(2000), width="stretch", hide_index=True)
+         else:
+             st.info("Сегментов для таблицы нет.")
+ 
+         report_text = build_gcode_reverse_report(analysis)
+-        st.download_button("Скачать отчёт обратного анализа .txt", report_text, file_name="ebam_reverse_gcode_analysis_v4291.txt", mime="text/plain", key=f"{key_prefix}_report_download")
++        st.download_button("Скачать отчёт обратного анализа .txt", report_text, file_name=f"ebam_reverse_gcode_analysis_{APP_FILE_TAG}.txt", mime="text/plain", key=f"{key_prefix}_report_download")
+         if not seg_df.empty:
+-            st.download_button("Скачать сегменты траектории .csv", seg_df.to_csv(index=False), file_name="ebam_reverse_gcode_segments_v4291.csv", mime="text/csv", key=f"{key_prefix}_segments_download")
++            st.download_button("Скачать сегменты траектории .csv", seg_df.to_csv(index=False), file_name=f"ebam_reverse_gcode_segments_{APP_FILE_TAG}.csv", mime="text/csv", key=f"{key_prefix}_segments_download")
+         if not w_df.empty:
+-            st.download_button("Скачать W-перемещения .csv", w_df.to_csv(index=False), file_name="ebam_reverse_w_moves_v4291.csv", mime="text/csv", key=f"{key_prefix}_w_download")
++            st.download_button("Скачать W-перемещения .csv", w_df.to_csv(index=False), file_name=f"ebam_reverse_w_moves_{APP_FILE_TAG}.csv", mime="text/csv", key=f"{key_prefix}_w_download")
+         with st.expander("Первые строки отчёта", expanded=False):
+             st.text(report_text[:12000])
+         return analysis
+@@ -2623,7 +2705,8 @@
+     col_a, col_b = st.columns([1, 1])
+     with col_a:
+         st.subheader(f"Анализ геометрии: {source_info}")
+-        st.table(pd.DataFrame([summary]).T.rename(columns={0: "значение"}))
++        summary_df = pd.DataFrame({"значение": [str(v) for v in summary.values()]}, index=list(summary.keys()))
++        st.table(summary_df)
+         if src_type == "STL 3D" and not summary["is_watertight"]:
+             st.warning("STL не замкнутый. Сечения могут получиться неполными. Для точного расчёта лучше замкнутая STL-модель.")
+     with col_b:
+@@ -2687,6 +2770,7 @@
+                 _fmt_hm(eta["active_s"]), _fmt_hm(eta.get("aux_s", 0.0)), _fmt_hm(eta["total_s"])
+             ]
+         })
++        calc_df["Значение"] = calc_df["Значение"].map(str)
+         st.table(calc_df.set_index("Параметр"))
+         cinfo = time_plan.get("c_limit_info")
+         if cinfo and cinfo.get("radius_below_warning"):
+@@ -2757,7 +2841,7 @@
+                 st.error(f"Цель: {target_text}. Было примерно {base_text}, после подстройки примерно {adj_text} ({delta:+.1f}%). Вероятно, в это время логично не уложиться без ухудшения режима или выхода за ограничения.")
+             applied = time_plan.get("applied_settings", {})
+             if applied:
+-                st.table(pd.DataFrame({
++                applied_df = pd.DataFrame({
+                     "Параметр": ["Z-шаг, мм", "Шаг дорожек, мм", "Скорость низ, мм/мин", "Скорость верх, мм/мин", "Энергия низ, Дж/мм", "Энергия верх, Дж/мм", "Пауза низ/верх, с", "Лимит тока E0, мА"],
+                     "Применено": [
+                         round(applied.get("layer_height", settings.layer_height), 3),
+@@ -2769,7 +2853,9 @@
+                         f"{applied.get('pause_bottom', settings.layer_pause_bottom_s):.2f} / {applied.get('pause_top', settings.layer_pause_top_s):.2f}",
+                         round(applied.get("current_max", settings.current_max_ma), 1),
+                     ]
+-                }).set_index("Параметр"))
++                })
++                applied_df["Применено"] = applied_df["Применено"].map(str)
++                st.table(applied_df.set_index("Параметр"))
+             for msg in time_plan.get("messages", []):
+                 st.warning(msg)
+         max_wire_calc = max(wire_bottom, wire_top)
+@@ -3026,14 +3112,14 @@
+         st.download_button(
+             "Скачать весь комплект .zip",
+             result_zip,
+-            file_name=f"ebam_result_v4291_{suffix}.zip",
++            file_name=f"ebam_result_{APP_FILE_TAG}_{suffix}.zip",
+             mime="application/zip",
+             type="primary",
+         )
+-        st.download_button("Скачать G-code .ngc", result.gcode, file_name=f"ebam_generated_v4291_{suffix}.ngc", mime="text/plain")
+-        st.download_button("Скачать таблицу слоёв .csv", result.layer_csv, file_name=f"ebam_layers_v4291_{suffix}.csv", mime="text/csv")
+-        st.download_button("Скачать аудит .txt", result.audit_text, file_name=f"ebam_audit_v4291_{suffix}.txt", mime="text/plain")
+-        st.download_button("Скачать настройки .json", settings_to_json(run_settings), file_name=f"ebam_settings_v4291_{suffix}.json", mime="application/json")
++        st.download_button("Скачать G-code .ngc", result.gcode, file_name=f"ebam_generated_{APP_FILE_TAG}_{suffix}.ngc", mime="text/plain")
++        st.download_button("Скачать таблицу слоёв .csv", result.layer_csv, file_name=f"ebam_layers_{APP_FILE_TAG}_{suffix}.csv", mime="text/csv")
++        st.download_button("Скачать аудит .txt", result.audit_text, file_name=f"ebam_audit_{APP_FILE_TAG}_{suffix}.txt", mime="text/plain")
++        st.download_button("Скачать настройки .json", settings_to_json(run_settings), file_name=f"ebam_settings_{APP_FILE_TAG}_{suffix}.json", mime="application/json")
+         st.subheader("Сводка")
+         st.json(result.stats)
+         if result.stats.get("gcode_size_mb", 0) > settings.max_gcode_size_mb_warning:
+@@ -3047,7 +3133,7 @@
+     st.subheader("Параметры JSON")
+     st.caption("Можно сохранить профиль режима и потом восстановить вручную/через CLI.")
+     settings_json_now = settings_to_json(settings)
+-    st.download_button("Скачать текущие настройки .json", settings_json_now, file_name="ebam_settings_v4291_current.json", mime="application/json")
++    st.download_button("Скачать текущие настройки .json", settings_json_now, file_name=f"ebam_settings_{APP_FILE_TAG}_current.json", mime="application/json")
+     st.code(settings_json_now, language="json")
+ 
+ 
+@@ -3087,6 +3173,7 @@
+         cal_e0_code = st.number_input("E0 исходный, мА", min_value=0.0, max_value=100.0, value=float(_e0_default), step=0.5, format="%.3f", key="cal_e0_code")
+         cal_u = st.number_input("Напряжение U, кВ", min_value=1.0, max_value=200.0, value=float(settings.voltage_kv), step=1.0, format="%.3f", key="cal_u")
+         cal_wire_d = st.number_input("Диаметр проволоки, мм", min_value=0.1, max_value=5.0, value=float(settings.wire_diameter_mm), step=0.1, format="%.3f", key="cal_wire_d")
++        cal_eta = st.number_input("Коэффициент осаждения η", min_value=0.10, max_value=1.00, value=float(settings.deposition_efficiency), step=0.01, format="%.3f", key="cal_eta")
+     with colc3:
+         cal_actual_h = st.number_input("Фактическая высота детали, мм", min_value=0.0, max_value=1000.0, value=min(float(_h), 88.25), step=0.5, format="%.3f", key="cal_actual_h")
+         cal_od = st.number_input("Наружный диаметр OD, мм", min_value=0.0, max_value=1000.0, value=86.13, step=0.5, format="%.3f", key="cal_od")
+@@ -3119,6 +3206,7 @@
+         e0_code_ma=cal_e0_code,
+         voltage_kv=cal_u,
+         wire_diameter_mm=cal_wire_d,
++        deposition_efficiency=cal_eta,
+         actual_height_mm=cal_actual_h,
+         outer_diameter_mm=cal_od,
+         inner_diameter_mm=cal_id,
+@@ -3139,20 +3227,21 @@
+     profile_csv = experience_profile_to_csv(profile)
+ 
+     st.markdown("### Расчётный профиль зон")
+-    st.dataframe(pd.DataFrame(profile.get("zones", [])), use_container_width=True)
++    st.dataframe(pd.DataFrame(profile.get("zones", [])), width="stretch")
+     for w in profile.get("warnings", []) or []:
+         st.warning(w)
+ 
+     cola, colb, colc = st.columns(3)
+     with cola:
+-        st.download_button("Скачать profile.json", profile_json, file_name="ebam_experience_profile_v4299.json", mime="application/json")
++        st.download_button("Скачать profile.json", profile_json, file_name=f"ebam_experience_profile_{APP_FILE_TAG}.json", mime="application/json")
+     with colb:
+-        st.download_button("Скачать profile.csv", profile_csv, file_name="ebam_experience_profile_v4299.csv", mime="text/csv")
++        st.download_button("Скачать profile.csv", profile_csv, file_name=f"ebam_experience_profile_{APP_FILE_TAG}.csv", mime="text/csv")
+     with colc:
+-        st.download_button("Скачать краткий отчёт .txt", "EXPERIENCE PROFILE\n\n" + profile_json, file_name="ebam_experience_profile_report_v4299.txt", mime="text/plain")
++        st.download_button("Скачать краткий отчёт .txt", "EXPERIENCE PROFILE\n\n" + profile_json, file_name=f"ebam_experience_profile_report_{APP_FILE_TAG}.txt", mime="text/plain")
+ 
+     st.markdown("### Применение профиля к генератору")
+-    st.caption("Для полной непрерывности E0/E2 по умолчанию НЕ меняются внутри движения: приложение командует одно среднее значение. Cfeed и Z-step могут меняться по зонам без M68.")
++    st.caption("По умолчанию E0/E2 усредняются для непрерывности. Зонные обновления можно включить отдельно: M67 применяется только после подтверждения HAL, иначе остаётся совместимый M68.")
++    st.info("Приложение не трогает внешние overrides и не добавляет M49/M50. Для сравнимой калибровки рекомендуется WIRE override 100%, но ручная регулировка остаётся доступной.")
+     ac1, ac2, ac3, ac4 = st.columns(4)
+     with ac1:
+         apply_c = st.checkbox("Применять Cfeed по зонам", value=True, key="cal_apply_c")
+@@ -3162,7 +3251,10 @@
+         apply_e0 = st.checkbox("Применять E0 по зонам", value=False, key="cal_apply_e0")
+     with ac4:
+         apply_z = st.checkbox("Применять Z-step по зонам", value=True, key="cal_apply_z")
+-    m68_inside = st.checkbox("Разрешить M68 E0/E2 на границах зон (может дать микропаузу)", value=False, key="cal_m68_inside")
++    m68_inside = st.checkbox(
++        "Обновлять E0/E2 на границах зон", value=False, key="cal_m68_inside",
++        help="В режиме подтверждённого M67 значения синхронизируются со следующим кольцом. В совместимом M68 обновление немедленное и может нарушить сглаживание."
++    )
+     if st.button("Применить профиль к генератору", type="primary"):
+         st.session_state["experience_profile_json"] = profile_json
+         st.session_state["experience_profile_apply_now"] = True

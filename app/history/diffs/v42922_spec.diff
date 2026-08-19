@@ -1,0 +1,10 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_21_CONST_VELOCITY/EBAM_Gcode_Studio.spec	2026-07-06 09:42:53.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_21_CONST_VELOCITY/EBAM_Gcode_Studio.spec	2026-07-18 00:18:22.057317942 +0000
+@@ -45,6 +45,7 @@
+ 
+ # Common hidden imports used by trimesh/scipy/shapely/streamlit
+ hiddenimports += [
++    'flange_family_generator',  # v4.2.9.22: exe build was missing this module
+     "scipy.spatial._ckdtree",
+     "scipy.interpolate",
+     "scipy.sparse.csgraph._validation",

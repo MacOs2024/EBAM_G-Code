@@ -1,0 +1,30 @@
+EBAM G-Code Studio v4.2.9.7 TEST REPORT
+========================================
+
+Scope:
+- Add C-table no-pause fixed-Z ring mode with C/Z transition.
+- Add optional disable controls for pauses, W-retract and Z-hop.
+- Keep mandatory continuous E0/E2 inside no-pause mode without a checkbox.
+- Add manual/auto wire-feed modes and recalculate values around actual table speed.
+
+Checks:
+PASS py_compile app.py
+PASS py_compile ebam_gcode_studio/core.py
+PASS py_compile cli_generate.py
+PASS py_compile desktop_launcher.py
+PASS ProcessSettings contains rotary_c_motion_mode
+PASS ProcessSettings contains wire_feed_mode and manual wire fields
+PASS generated no-pause G-code contains rotary_c_fixed_z_no_pause marker
+PASS generated test has C360 fixed-Z rings
+PASS generated test has C/Z transition moves between rings
+PASS no M68 commands inside continuous motion block
+PASS no G4 pauses inside continuous motion block
+PASS no W commands inside continuous motion block
+PASS no Z-only moves inside continuous motion block
+PASS auto wire mode recalculates E2 from F/Z/step
+PASS manual constant wire mode writes the operator E2 setpoint
+PASS manual wire mode changes estimated wall thickness and energy density
+
+Notes:
+- No-pause mode is experimental and must be validated by dry-run on the real Bormash controller.
+- Mixed C+Z feed interpretation may depend on the controller/planner settings.
