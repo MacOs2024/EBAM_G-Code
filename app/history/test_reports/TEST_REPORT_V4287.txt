@@ -1,0 +1,52 @@
+EBAM G-Code Studio v4.2.9.6 REAL C RADIUS LIMIT - TEST REPORT
+
+Base: v4.2.8.6 ROTARY C TABLE.
+Reason: user found path-plan bugs in STL/standard preview and missing consistency between UI, preview and generated G-code.
+
+Fixed:
+1. Unified ordinary path-plan UI for STL, standard shapes, CSV and DXF:
+   - Змейкой Y-
+   - Змейкой Y+
+   - Змейкой X-
+   - Змейкой X+
+   - Параллельно Y-
+   - Параллельно Y+
+   - Параллельно X-
+   - Параллельно X+
+
+2. Extended mode no longer splits the non-rotational path plan into separate hidden controls:
+   old: "Тип проходов" + "Ось змейки" + "Первый проход" / "Направление параллельных";
+   new: one explicit list, same as simple mode.
+
+3. Rotational hatch fallback also uses the same explicit list when old hatch fill is selected.
+
+4. STL recommendation block added:
+   - every STL receives a recommended initial path plan based on bounding-box proportions;
+   - elongated parts recommend paths along the longer XY axis;
+   - approximately round/tall STL models warn that true vessel/balloon work is better through "Чаши/баллоны" + rings/C-table mode;
+   - non-watertight STL warning is included in the recommendation.
+
+5. Preview now reacts visibly to path-plan changes:
+   - continuous snake preview shows dashed link moves between hatch lines;
+   - segmented/parallel preview has no snake links;
+   - arrows are drawn on hatch lines so Y-/Y+/X-/X+ direction becomes visible;
+   - preview caption states actual deposition_strategy and direction.
+
+Verification:
+- Windows py_compile app/core/cli: PASS
+- Linux py_compile app/core/cli: PASS
+- Windows source/static/UI checks: PASS
+- Linux source/static/UI checks: PASS
+- Windows path-plan direction tests: PASS
+- Linux path-plan direction tests: PASS
+- Continuous Y-/Y+/X-/X+ first deposition vector matches selected direction: PASS
+- Segmented Y-/Y+/X-/X+ first deposition vector matches selected direction: PASS
+- Preview helper creates links for continuous snake and no links for segmented mode: PASS
+- CLI CSV generation still works: PASS
+
+Automated test result:
+TOTAL 62/62 PASS
+
+Notes:
+- This update does not turn arbitrary STL into rotary C-table G-code automatically. For STL that is clearly a vessel/balloon, the app now recommends using the parametric "Чаши/баллоны" mode where rings, spiral and rotary C-table are actually implemented.
+- Calculations are Streamlit-rerun based: changing geometry/material/path/energy/feed/layer/hatch/etc. rebuilds ProcessSettings and recalculates the table/preview/generation inputs.

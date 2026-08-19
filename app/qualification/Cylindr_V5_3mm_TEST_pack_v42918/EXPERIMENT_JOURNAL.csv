@@ -1,0 +1,4 @@
+case_id,e2_command_mm_s,wire_override_pct,current_override_pct,feed_override_pct,measured_height_mm,wall_bottom_mm,wall_middle_mm,wall_top_mm,outer_diameter_mm,inner_diameter_mm,mass_g,surface_observation,wire_behavior,vacuum_events,abort_reason,photos_or_log_refs,operator_decision
+LOW,5.957,100.0,100.0,100.0,,,,,,,,,,,,,NOT_RUN
+NOMINAL,6.619,100.0,100.0,100.0,,,,,,,,,,,,,NOT_RUN
+HIGH,7.281,100.0,100.0,100.0,,,,,,,,,,,,,NOT_RUN

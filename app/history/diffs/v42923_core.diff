@@ -1,0 +1,207 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_22_CV_EVERYWHERE/ebam_gcode_studio/core.py	2026-07-18 00:20:25.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_22_CV_EVERYWHERE/ebam_gcode_studio/core.py	2026-07-18 12:37:38.777722443 +0000
+@@ -1,4 +1,4 @@
+-"""EBAM G-code Studio core v4.2.9.22.
++"""EBAM G-code Studio core v4.2.9.23.
+ 
+ STL/DXF/CSV -> layer slicing -> EBAM-oriented G-code.
+ Designed for Bormash/FABMETALL-style electron-beam wire deposition.
+@@ -29,8 +29,8 @@
+ Point = Tuple[float, float]
+ Segment = Tuple[float, float, float, float]
+ 
+-APP_VERSION = "v4.2.9.22"
+-EXPERIENCE_PROFILE_VERSION = "v4.2.9.22-experience-profile"
++APP_VERSION = "v4.2.9.23"
++EXPERIENCE_PROFILE_VERSION = "v4.2.9.23-experience-profile"
+ 
+ 
+ BORMASH_LIMITS = {
+@@ -170,7 +170,7 @@
+     # no_pause_flat_rings = C360 at fixed Z, then C+transition_deg with Z+layer_height while E0/E2 stay ON.
+     rotary_c_motion_mode: str = "separate_rings"
+     rotary_c_transition_angle_deg: float = 17.0
+-    # v4.2.9.22: radial feed-rate compensation for C-table rings. Field problem
++    # v4.2.9.23: radial feed-rate compensation for C-table rings. Field problem
+     # (Flange1_R6): with constant C, the outer rings run much faster linearly
+     # (v = C*pi*R/180 grows with R), so the volume balance drives wire feed E2 up
+     # 3-4x while beam power stays capped -> energy density collapses and the wire
+@@ -182,6 +182,13 @@
+     rotary_c_wire_comfort_mm_s: float = 29.0   # E2 the operator considers stable
+     rotary_c_shrink_pitch_at_floor: bool = True
+     rotary_c_min_pitch_factor: float = 0.5     # do not shrink pitch below this fraction
++    # v4.2.9.23: adaptive inter-layer thermal dwell ("min layer cycle").
++    # Field basis: R6 flange-family dwells 116-189 s appeared ONLY on short hub
++    # layers; long disc layers self-cool. If a layer finishes faster than the
++    # minimum cycle, a G4 dwell is appended (beam/wire already OFF between rings).
++    thermal_min_layer_cycle_enabled: bool = False
++    thermal_min_layer_cycle_min: float = 3.0
++    thermal_min_dwell_s: float = 120.0         # floor when a dwell triggers at all
+     rotary_c_continuous_keep_beam_wire_on: bool = False
+     rotary_c_disable_layer_pauses: bool = False
+     rotary_c_disable_w_retract: bool = False
+@@ -941,6 +948,8 @@
+     min_radius_used = float("inf")
+     max_radius_used = 0.0
+     feed_limited_count = 0
++    thermal_dwell_count = 0
++    thermal_dwell_total_s = 0.0
+     small_radius_count = 0
+     total_active_len = 0.0
+     total_rings = 0
+@@ -966,7 +975,7 @@
+             base = layer_parameters(z, height, effective_settings)
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+             max_c_required = max(max_c_required, required_c)
+-            # v4.2.9.22: radial feed-rate compensation (constant-velocity mode).
++            # v4.2.9.23: radial feed-rate compensation (constant-velocity mode).
+             c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
+                 effective_settings, radius, base.feed_mm_min)
+             if radius < float(effective_settings.rotary_c_min_radius_mm):
+@@ -997,8 +1006,16 @@
+             max_c_used = max(max_c_used, c_feed)
+         if layer_infos and layer_infos[-1].layer_pause_s > 0:
+             lines.append(f"G4 P{_fmt(layer_infos[-1].layer_pause_s,3)} (layer thermal stabilization)")
++        _tdw = _thermal_dwell_for_layer(effective_settings, sum(li.path_length_mm / max(li.travel_speed_mm_s, 1e-9) for li in layer_infos[-len(radii):]))
++        if _tdw > 0:
++            lines.append(f"G4 P{_fmt(_tdw,1)} (THERMAL_DWELL L{idx}: adaptive - layer cycle below minimum)")
++            thermal_dwell_count += 1
++            thermal_dwell_total_s += _tdw
+     if not layer_infos:
+         raise RuntimeError("No STL rotary C layers were generated. Check STL orientation, sectioning, radial step and height.")
++    if thermal_dwell_count:
++        warnings.append(f"ТЕПЛОВЫЕ ВЫДЕРЖКИ: {thermal_dwell_count} шт, суммарно {thermal_dwell_total_s/60.0:.1f} мин "
++                        f"(мин. цикл слоя {float(getattr(effective_settings, 'thermal_min_layer_cycle_min', 0.0)):.1f} мин, пол {float(getattr(effective_settings, 'thermal_min_dwell_s', 0.0)):.0f} с); время включено в G-code (G4).")
+     if feed_limited_count:
+         warnings.append(f"WARNING: {feed_limited_count} STL rotary C passes were feed-limited by C max speed; E0/E2 were recalculated for the reduced linear speed.")
+     if small_radius_count:
+@@ -1479,6 +1496,17 @@
+     return 180.0 * float(linear_feed_mm_min) / (math.pi * r)
+ 
+ 
++def _thermal_dwell_for_layer(settings: ProcessSettings, layer_active_s: float) -> float:
++    """Adaptive inter-layer thermal dwell: max(min_cycle - t_layer, floor); 0 if
++    disabled or the layer already ran longer than the minimum cycle."""
++    if not bool(getattr(settings, "thermal_min_layer_cycle_enabled", False)):
++        return 0.0
++    cyc = max(0.0, float(getattr(settings, "thermal_min_layer_cycle_min", 0.0) or 0.0)) * 60.0
++    if cyc <= 0.0 or float(layer_active_s) >= cyc:
++        return 0.0
++    return max(cyc - float(layer_active_s), max(0.0, float(getattr(settings, "thermal_min_dwell_s", 0.0) or 0.0)))
++
++
+ def _rotary_c_target_linear_mm_s(settings: ProcessSettings) -> float:
+     """Target linear deposition speed for constant-velocity radial compensation.
+ 
+@@ -1689,6 +1717,8 @@
+     radii_used: List[float] = []
+     cfeeds_used: List[float] = []
+     feed_limited_count = 0
++    thermal_dwell_count = 0
++    thermal_dwell_total_s = 0.0
+     max_c_required = 0.0
+     max_c_used = 0.0
+     total_active_len = 0.0
+@@ -1720,7 +1750,7 @@
+             pitch_factor = 1.0
+         else:
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+-            # v4.2.9.22: radial feed-rate compensation (constant-velocity mode).
++            # v4.2.9.23: radial feed-rate compensation (constant-velocity mode).
+             c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
+                 effective_settings, radius, base.feed_mm_min)
+         max_c_required = max(max_c_required, required_c)
+@@ -1835,6 +1865,9 @@
+     lines.extend(_gcode_footer(footer_settings))
+     gcode = "\n".join(lines) + "\n"
+     audit = audit_gcode(gcode, effective_settings)
++    if thermal_dwell_count:
++        warnings.append(f"ТЕПЛОВЫЕ ВЫДЕРЖКИ: {thermal_dwell_count} шт, суммарно {thermal_dwell_total_s/60.0:.1f} мин "
++                        f"(мин. цикл слоя {float(getattr(effective_settings, 'thermal_min_layer_cycle_min', 0.0)):.1f} мин, пол {float(getattr(effective_settings, 'thermal_min_dwell_s', 0.0)):.0f} с); время включено в G-code (G4).")
+     if feed_limited_count:
+         warnings.append(f"WARNING: {feed_limited_count} no-pause C rings were feed-limited by C max; E2 was recalculated from actual F unless manual wire mode is enabled.")
+     qmetal_values = [effective_settings.wire_area_mm2() * li.wire_mm_s * float(effective_settings.deposition_efficiency) for li in layer_infos]
+@@ -1980,6 +2013,8 @@
+     min_radius_used = float("inf")
+     max_radius_used = 0.0
+     feed_limited_count = 0
++    thermal_dwell_count = 0
++    thermal_dwell_total_s = 0.0
+     small_radius_count = 0
+     total_active_len = 0.0
+     total_rings = 0
+@@ -2000,7 +2035,7 @@
+             base = layer_parameters(z, height, effective_settings)
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+             max_c_required = max(max_c_required, required_c)
+-            # v4.2.9.22: radial feed-rate compensation (constant-velocity mode).
++            # v4.2.9.23: radial feed-rate compensation (constant-velocity mode).
+             c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
+                 effective_settings, radius, base.feed_mm_min)
+             if radius < float(effective_settings.rotary_c_min_radius_mm):
+@@ -2031,8 +2066,16 @@
+             max_c_used = max(max_c_used, c_feed)
+         if layer_infos and layer_infos[-1].layer_pause_s > 0:
+             lines.append(f"G4 P{_fmt(layer_infos[-1].layer_pause_s,3)} (layer thermal stabilization)")
++        _tdw = _thermal_dwell_for_layer(effective_settings, sum(li.path_length_mm / max(li.travel_speed_mm_s, 1e-9) for li in layer_infos[-len(radii):]))
++        if _tdw > 0:
++            lines.append(f"G4 P{_fmt(_tdw,1)} (THERMAL_DWELL L{idx}: adaptive - layer cycle below minimum)")
++            thermal_dwell_count += 1
++            thermal_dwell_total_s += _tdw
+     if not layer_infos:
+         raise RuntimeError("No rotary C layers were generated. Check vessel geometry, radial step and height.")
++    if thermal_dwell_count:
++        warnings.append(f"ТЕПЛОВЫЕ ВЫДЕРЖКИ: {thermal_dwell_count} шт, суммарно {thermal_dwell_total_s/60.0:.1f} мин "
++                        f"(мин. цикл слоя {float(getattr(effective_settings, 'thermal_min_layer_cycle_min', 0.0)):.1f} мин, пол {float(getattr(effective_settings, 'thermal_min_dwell_s', 0.0)):.0f} с); время включено в G-code (G4).")
+     if feed_limited_count:
+         warnings.append(f"WARNING: {feed_limited_count} rotary C passes were feed-limited by C max speed; E0/E2 were recalculated for the reduced linear speed.")
+     if small_radius_count:
+@@ -2939,7 +2982,7 @@
+         raise ValueError("rotational_path_strategy должен быть 'hatch', 'rings/xy_rings', 'spiral/xy_spiral', 'rotary_c_rings' или 'stl_rotary_c_rings'")
+     if float(getattr(settings, "rotational_radial_step_mm", 0.0)) < 0:
+         raise ValueError("rotational_radial_step_mm должен быть >= 0")
+-    # v4.2.9.22 (ported from v4.2.9.16): radial step = 0 must NOT silently collapse to
++    # v4.2.9.23 (ported from v4.2.9.16): radial step = 0 must NOT silently collapse to
+     # hatch_spacing for a rotational strategy. Field case Flange_V1: radial_step=0
+     # stacked all rings on one line -> a cup/cone instead of a flat disc, +6x layer
+     # height. Also inflates ring count and wrecks the time estimate.
+@@ -3860,6 +3903,8 @@
+     min_radius_used = float("inf")
+     max_radius_used = 0.0
+     feed_limited_count = 0
++    thermal_dwell_count = 0
++    thermal_dwell_total_s = 0.0
+     small_radius_count = 0
+     for idx, (z, zsec) in enumerate(zip(z_values, z_sections), start=1):
+         if progress_callback and ((idx == 1) or (idx == n_layers) or (idx % max(1, int(effective_settings.progress_update_every_layers)) == 0)):
+@@ -3885,7 +3930,7 @@
+                 base = layer_parameters(z, height, effective_settings)
+                 required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+                 max_c_required = max(max_c_required, required_c)
+-                # v4.2.9.22: CV radial compensation now also covers the special
++                # v4.2.9.23: CV radial compensation now also covers the special
+                 # cup/balloon STL path (his Flange1 route) - previously this loop
+                 # ignored rotary_c_constant_velocity entirely.
+                 c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
+@@ -3914,6 +3959,11 @@
+                 max_c_used = max(max_c_used, c_feed)
+             if layer_infos and layer_infos[-1].layer_pause_s > 0:
+                 lines.append(f"G4 P{_fmt(layer_infos[-1].layer_pause_s,3)} (layer thermal stabilization)")
++            _tdw = _thermal_dwell_for_layer(effective_settings, sum(li.path_length_mm / max(li.travel_speed_mm_s, 1e-9) for li in layer_infos[-len(radii):]))
++            if _tdw > 0:
++                lines.append(f"G4 P{_fmt(_tdw,1)} (THERMAL_DWELL L{idx}: adaptive - layer cycle below minimum)")
++                thermal_dwell_count += 1
++                thermal_dwell_total_s += _tdw
+         else:
+             layer = layer_parameters(z, height, effective_settings)
+             layer.index = idx
+@@ -3939,6 +3989,9 @@
+             max_segments_layer = max(max_segments_layer, len(segs))
+     if not layer_infos:
+         raise RuntimeError(f"No {source_label} special path layers were generated. Check geometry, sectioning, radial step and height.")
++    if thermal_dwell_count:
++        warnings.append(f"ТЕПЛОВЫЕ ВЫДЕРЖКИ: {thermal_dwell_count} шт, суммарно {thermal_dwell_total_s/60.0:.1f} мин "
++                        f"(мин. цикл слоя {float(getattr(effective_settings, 'thermal_min_layer_cycle_min', 0.0)):.1f} мин, пол {float(getattr(effective_settings, 'thermal_min_dwell_s', 0.0)):.0f} с); время включено в G-code (G4).")
+     if feed_limited_count:
+         warnings.append(f"WARNING: {feed_limited_count} rotary C passes were feed-limited by C max speed; E0/E2 were recalculated for the reduced linear speed.")
+     if small_radius_count:

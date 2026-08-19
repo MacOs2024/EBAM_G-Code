@@ -1,0 +1,108 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_22_CV_EVERYWHERE/app.py	2026-07-18 00:20:25.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_22_CV_EVERYWHERE/app.py	2026-07-18 12:37:38.779123165 +0000
+@@ -420,7 +420,7 @@
+                     circ = 2.0 * math.pi * r_k
+                     # linear feed actually usable at this radius under the C cap
+                     if bool(getattr(settings, "rotary_c_constant_velocity", False)):
+-                        # v4.2.9.22: mirror the generator's CV kinematics exactly,
++                        # v4.2.9.23: mirror the generator's CV kinematics exactly,
+                         # so the pre-generation estimate matches the real G-code.
+                         from ebam_gcode_studio.core import _rotary_c_ring_kinematics as _cvk
+                         _c_e, _f_e, _pf_e = _cvk(settings, r_k, avg_f)
+@@ -434,6 +434,10 @@
+                     one_layer_path += circ + (transition_deg / 360.0) * circ
+                     one_layer_s += (circ + (transition_deg / 360.0) * circ) / max(v_lin, 1e-9)
+                 active_s = one_layer_s * n_layers
++                if bool(getattr(settings, "thermal_min_layer_cycle_enabled", False)):
++                    _cyc_s = float(getattr(settings, "thermal_min_layer_cycle_min", 3.0)) * 60.0
++                    if one_layer_s < _cyc_s:
++                        pause_s += max(_cyc_s - one_layer_s, float(getattr(settings, "thermal_min_dwell_s", 0.0))) * n_layers
+                 path_len = one_layer_path * n_layers
+                 pause_s = 0.0 if bool(getattr(settings, "rotary_c_disable_layer_pauses", False)) else pause_s
+                 physical_passes = float(rings_per_layer * n_layers)
+@@ -874,7 +878,7 @@
+     if not bool(getattr(settings, "rotary_c_auto_limit_feed", True)):
+         return settings, _rotary_c_limit_status(summary, settings, None)
+     if bool(getattr(settings, "rotary_c_constant_velocity", False)):
+-        # v4.2.9.22: CV mode computes speed per ring itself; the GLOBAL clamp by the
++        # v4.2.9.23: CV mode computes speed per ring itself; the GLOBAL clamp by the
+         # fallback radius (18 mm) crushed F to ~188 mm/min and poisoned E2/energy/
+         # time in the summary and in separate-ring generators. Skip the clamp.
+         st = _rotary_c_limit_status(summary, settings, None)
+@@ -917,7 +921,7 @@
+       conservative boundaries. It NEVER raises current_max_ma automatically:
+       current_max_ma is a user-selected equipment/process limit.
+ 
+-    v4.2.9.22: selectable levers. `levers` is a dict describing which parameters
++    v4.2.9.23: selectable levers. `levers` is a dict describing which parameters
+     the operator ALLOWS the tuner to change, each with an optional hard limit:
+         {
+           "layer_height":   {"enabled": bool, "max": mm},      # thicker -> fewer layers
+@@ -992,7 +996,7 @@
+         # Experimental wider range. The UI will warn about quality loss.
+         layer_max_extreme = 1.20
+         hatch_max_extreme = 6.00
+-    # v4.2.9.22: honour user hard caps on the geometric levers. A disabled lever is
++    # v4.2.9.23: honour user hard caps on the geometric levers. A disabled lever is
+     # pinned to its base value (min==max==base) so the loop cannot move it.
+     if allow_layer:
+         if cap_layer is not None:
+@@ -1099,7 +1103,7 @@
+     plan["error_pct"] = err_pct
+     plan["possible"] = abs(err_pct) <= 18.0
+     plan["severity"] = "ok" if abs(err_pct) <= 10.0 else ("warn" if abs(err_pct) <= 25.0 else "bad")
+-    # v4.2.9.22: record which levers were active and the achievable bound, so the UI
++    # v4.2.9.23: record which levers were active and the achievable bound, so the UI
+     # can tell the operator exactly why a target could not be met and what to relax.
+     plan["levers_active"] = {
+         "layer_height": allow_layer, "radial_step": allow_step,
+@@ -1447,6 +1451,20 @@
+             "rotary_c_shrink_pitch_at_floor": True,
+         }
+         st.session_state["_cv_settings_active"] = st.session_state[f"_cv_settings_{key_prefix}"]
++        st.markdown("**Тепловая выдержка между слоями (адаптивно)**")
++        thermal_dwell_on = st.checkbox(
++            "Минимальный цикл слоя (тепловая выдержка)", value=False, key=f"{key_prefix}_thdw",
++            help="Если слой закончился быстрее минимального цикла, в конец слоя добавляется пауза G4 (луч и проволока в этот момент выключены). Длинные слои диска идут без пауз; короткие слои ступицы получают выдержку на остывание — как тепловые выдержки в R6 (2-3 мин). Количество и суммарное время печатаются в аудите.")
++        tdc1, tdc2 = st.columns(2)
++        with tdc1:
++            thermal_cycle_min = st.number_input("Мин. цикл слоя, мин", min_value=0.5, max_value=30.0, value=3.0, step=0.5, disabled=not thermal_dwell_on, key=f"{key_prefix}_thcyc")
++        with tdc2:
++            thermal_floor_s = st.number_input("Мин. выдержка при срабатывании, с", min_value=0.0, max_value=600.0, value=120.0, step=10.0, disabled=not thermal_dwell_on, key=f"{key_prefix}_thflr", help="Нижний предел паузы, когда выдержка срабатывает. 120 с = «по 2 минуты на слой ступицы».")
++        st.session_state["_thermal_settings_active"] = {
++            "thermal_min_layer_cycle_enabled": bool(thermal_dwell_on),
++            "thermal_min_layer_cycle_min": float(thermal_cycle_min),
++            "thermal_min_dwell_s": float(thermal_floor_s),
++        }
+         rotary_c_seam_scatter_deg = st.number_input(
+             "Рассеивание шва, град/кольцо (0 = выкл)", min_value=-179.0, max_value=179.0, value=0.0, step=0.5,
+             help="Смещает стартовый угол каждого кольца (репозиция C при ВЫКЛЮЧЕННОМ луче), чтобы шов старт/стоп не накапливался на одной вертикали. Рекомендуется 137.5° (золотой угол). Работает в режиме относительных оборотов; в no-pause шов и так смещается углом перехода.",
+@@ -1736,6 +1754,9 @@
+         _cv_apply = st.session_state.get("_cv_settings_active") or {}
+         if _cv_apply.get("rotary_c_constant_velocity"):
+             settings = replace(settings, **_cv_apply)
++        _th_apply = st.session_state.get("_thermal_settings_active") or {}
++        if _th_apply.get("thermal_min_layer_cycle_enabled"):
++            settings = replace(settings, **_th_apply)
+         settings, c_limit_info = _apply_rotary_c_feed_limit_to_settings(summary, settings)
+         if c_limit_info:
+             time_plan["c_limit_info"] = c_limit_info
+@@ -2060,7 +2081,7 @@
+             target_fit_mode = "full_process"
+         target_total_s = (int(target_hours) * 3600 + int(target_minutes) * 60) if target_time_enabled else 0
+ 
+-        # v4.2.9.22: selectable regulation levers. Each lever: allow to change + hard limit.
++        # v4.2.9.23: selectable regulation levers. Each lever: allow to change + hard limit.
+         # E2 (wire) is ALWAYS dependent (computed from geometry x speed) to prevent over-feed.
+         time_levers = None
+         if target_time_enabled:
+@@ -2171,6 +2192,9 @@
+     _cv_apply = st.session_state.get("_cv_settings_active") or {}
+     if _cv_apply.get("rotary_c_constant_velocity"):
+         settings = replace(settings, **_cv_apply)
++    _th_apply = st.session_state.get("_thermal_settings_active") or {}
++    if _th_apply.get("thermal_min_layer_cycle_enabled"):
++        settings = replace(settings, **_th_apply)
+     settings, c_limit_info = _apply_rotary_c_feed_limit_to_settings(summary, settings)
+     if c_limit_info:
+         time_plan["c_limit_info"] = c_limit_info

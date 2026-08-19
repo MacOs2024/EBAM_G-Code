@@ -1,0 +1,61 @@
+EBAM G-Code Studio v4.2.9.6 REAL C RADIUS LIMIT - TEST REPORT
+
+Base: v4.2.8.5 ROTATIONAL RING SPIRAL.
+Goal: add an experimental rotary-table C-axis strategy for rotational vessels / sphere balloons.
+
+Implemented:
+1. New rotational vessel strategy: rotary_c_rings.
+2. G-code style for rotary C mode:
+   - M429 identity kinematics.
+   - B fixed, default B=0.
+   - X = rotary_c_center_x_mm + current_radius_mm.
+   - Y = rotary_c_center_y_mm.
+   - Z = layer height.
+   - C makes one relative full turn: G91 / G1 C360 / G90.
+   - E0/E2 are active only during the C deposition turn.
+3. New ProcessSettings fields:
+   - rotary_c_center_x_mm
+   - rotary_c_center_y_mm
+   - rotary_c_direction
+   - rotary_c_start_deg
+   - rotary_c_b_angle_deg
+   - rotary_c_max_deg_min
+   - rotary_c_min_radius_mm
+   - rotary_c_auto_limit_feed
+   - rotary_c_relative_turns
+4. UI additions for Чаши/баллоны:
+   - Поворотный стол C — кольца B=0
+   - settings for C direction, C center X/Y, B angle, start C, C speed limit, min-radius warning, auto-limiting F by C max speed.
+5. Rotary C speed calculation:
+   C_deg_min = 180 * F_mm_min / (pi * R_mm)
+6. If C speed would exceed the configured max and auto-limit is enabled, linear feed is reduced and E0/E2 are recalculated for the actual lower speed.
+7. Audit now tracks active C-axis deposition moves and C min/max.
+8. Bormash X/Y/Z limit check for rotary mode uses actual X/Y coordinates from the rotary table strategy, not only nominal vessel geometry.
+9. New sample files:
+   - samples/sample_balloon_rotary_c_table.ngc
+   - samples/sample_balloon_rotary_c_table_layers.csv
+   - samples/sample_balloon_rotary_c_table_audit.txt
+
+Verification:
+- Windows py_compile app/core/cli/launcher: PASS
+- Linux py_compile app/core/cli/launcher: PASS
+- Windows rotary C functional tests: 17/17 PASS
+- Linux rotary C functional tests: 17/17 PASS
+
+Functional checks passed:
+- UI/source contains rotary C mode and controls: PASS
+- rotary_c_rings generation creates ROTATIONAL_SPECIAL_PATH: rotary_c_rings marker: PASS
+- Generated G-code contains G0 B0 and relative G91 C360: PASS
+- C+ direction creates C360: PASS
+- C- direction creates C-360: PASS
+- C speed limit auto-limits small-radius passes: PASS
+- Stats include rotary_c_feed_limited_count and C-feed limits: PASS
+- Audit reports active C-axis deposition motion: PASS
+- Oversized actual X position fails Bormash X limit check: PASS
+- Legacy rotational modes still work: hatch/rings/spiral PASS
+- CLI CSV generation still works: PASS
+
+Important practical warnings:
+- This is an experimental first implementation for B=0 rotary C rings.
+- Before real EBAM deposition, check C+ / C- direction, G91 C360 behavior, repeated C turns, actual C center X/Y, C speed limit and dry run without E0/E2.
+- Non-zero B is exposed for testing, but first real work should keep B=0. Tilt B requires TCP / rotation-center calibration and collision checks.

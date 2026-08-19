@@ -1,0 +1,37 @@
+EBAM G-Code Studio v4.2.9.6 REAL C RADIUS LIMIT - TEST REPORT
+
+Base: v4.2.9.1 STRATEGY TIME CURRENT.
+Reason: User found that lowering max C speed changed total time only, while visible F/E0/E2 rows stayed unchanged. Also requested simple-mode Z-step/hatch controls and mutual exclusion between energy input and direct E0 setpoint.
+
+Implemented:
+1. Simple mode now exposes:
+   - Шаг слоя Z, мм
+   - Шаг/ширина между дорожками, мм
+   These values go directly into ProcessSettings.layer_height and ProcessSettings.hatch_spacing.
+
+2. Advanced mode E0 logic is now explicit and mutually exclusive:
+   - Energy mode: energy fields are editable; E0 is calculated.
+   - Current-setpoint mode: energy fields are disabled/greyed; E0 setpoint fields are editable; actual J/mm is recalculated from U, E0 and F.
+   - Movement speed F and wire-related controls remain editable.
+
+3. Rotary C max-speed UI calculation is corrected:
+   - If rotary C auto-limit is enabled and max C speed is too low, the visible feed F is capped before summary calculations.
+   - Then E0, E2, actual energy, time and warnings are recalculated from the capped F.
+   - The generator still keeps per-ring C limiting as a second protection layer.
+
+Verification:
+- Windows py_compile app/core/cli/launcher: PASS
+- Linux py_compile app/core/cli/launcher: PASS
+- Source check for disabled energy inputs in E0-setpoint mode: PASS
+- Source check for simple-mode Z/hatch controls: PASS
+- Source check for C limit UI helper and message: PASS
+- Core rotary C high-limit vs low-limit test: PASS
+  * C max 10000 deg/min -> first ring F=650.0 mm/min, E0=28.528 mA, E2=39.273 mm/s
+  * C max 300 deg/min -> first ring F=104.9 mm/min, E0=4.605 mA, E2=6.340 mm/s
+- Current-setpoint mode test: PASS
+  * When C cap reduces F, E0 remains fixed while E2 changes.
+- CLI CSV generation still works on Windows package: PASS
+- CLI CSV generation still works on Linux package: PASS
+
+Conclusion:
+The C-speed limit no longer changes only time; it now visibly propagates through feed, E0/E2 and energy calculations in the UI model, matching the generator behaviour more closely.

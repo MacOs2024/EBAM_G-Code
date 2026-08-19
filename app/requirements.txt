@@ -1,0 +1,8 @@
+streamlit>=1.54,<2.0
+numpy>=1.23
+scipy>=1.11
+trimesh>=3.23
+shapely>=2.0
+matplotlib>=3.6
+pandas>=1.5
+ezdxf>=1.1

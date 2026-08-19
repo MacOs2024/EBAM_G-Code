@@ -1,0 +1,46 @@
+--- /tmp/a_app.py	2026-08-09 00:38:45.968236790 +0000
++++ /tmp/b_app.py	2026-08-09 00:38:45.976970855 +0000
+@@ -13,7 +13,8 @@
+ import numpy as np
+ 
+ from ebam_gcode_studio.core import (
+-    APP_VERSION, ProcessSettings, MATERIAL_LIBRARY,
++    APP_VERSION, ProcessSettings, MATERIAL_LIBRARY, FIELD_PROVEN_MAX_LAYER_MM,
++    max_wire_feed_for_beam, wire_area_from_diameter,
+     load_mesh_any, normalize_mesh, mesh_summary,
+     generate_from_mesh, generate_from_polygons_2d,
+     settings_to_json, settings_from_dict, recommend_settings_from_summary,
+@@ -636,6 +637,10 @@
+         add("Энергия цель низ/верх, Дж/мм", f"{tj_b:.1f} / {tj_t:.1f}")
+     add("Энергия факт низ/верх, Дж/мм", f"{aj_b:.1f} / {aj_t:.1f}")
+     add("Шаг заполнения, мм", f"{step_mm:.3f} ({'радиальный (кольца/спираль)' if is_rot_step else 'hatch'})")
++    _lay_now = float(getattr(settings, "layer_height", 0.0) or 0.0)
++    if _lay_now > FIELD_PROVEN_MAX_LAYER_MM + 1e-9:
++        add("Высота слоя вне проверенного диапазона, мм",
++            f"{_lay_now:.2f}  ⚠ на этой машине проверено до {FIELD_PROVEN_MAX_LAYER_MM:.2f} мм — только через TEST")
+     _qv_b, _qv_t = aj_b / denom, aj_t / denom
+     _qv_worst = max(_qv_b, _qv_t) if max(_qv_b, _qv_t) > 90.0 else min(_qv_b, _qv_t)
+     if max(_qv_b, _qv_t) >= 110.0:
+@@ -3039,6 +3044,22 @@
+     mat_labels = {k: v["name_ru"] for k, v in MATERIAL_LIBRARY.items()}
+     material_key = st.selectbox("Материал", list(mat_labels.keys()), format_func=lambda k: mat_labels[k], index=0)
+     st.caption(MATERIAL_LIBRARY[material_key].get("note_ru", ""))
++    if not bool(MATERIAL_LIBRARY[material_key].get("field_calibrated", False)):
++        _mat_d = float(MATERIAL_LIBRARY[material_key].get("wire_diameter_mm", 1.2))
++        _e2_beam = max_wire_feed_for_beam(_mat_d, 40.0)
++        st.info(
++            f"Расчётный потолок подачи для Ø{_mat_d:.1f} мм при токе 40 мА: **{_e2_beam:.1f} мм/с** "
++            f"(сечение проволоки {wire_area_from_diameter(_mat_d):.3f} мм²). Ограничение задаёт ЛУЧ, а не механизм: "
++            f"чем толще проволока, тем меньше её метров в секунду он успевает расплавить."
++        )
++        st.warning(
++            f"Профиль для проволоки {_mat_d:.1f} мм НЕ подтверждён наплавками на этой машине. "
++            "Плотность энергии QV взята от проверенной проволоки 1.2 мм, а всё, что зависит от диаметра "
++            "(сечение проволоки, подача, пределы слоя), пересчитано автоматически. "
++            "С ростом диаметра растёт теплоёмкость входящего металла и инерция расплавления, поэтому "
++            "реальная QV может потребоваться выше. Обязательно наплавьте калибровочный валик "
++            "(вкладка «Калибровка») и сверьте ширину/высоту с расчётом, прежде чем делать деталь."
++        )
+     mode = st.selectbox("Цель", ["Качество", "Баланс", "Скорость"], index=1, help="Качество — аккуратнее и медленнее; Баланс — стартовый режим; Скорость — быстрее, но выше риск ухудшения поверхности и формы.")
+ 
+ # ------------------------- load geometry -------------------------

@@ -1,0 +1,52 @@
+EBAM G-Code Studio v4.2.9.6 REAL C RADIUS LIMIT - TEST REPORT
+
+Base version:
+- v4.2.9.2 C LIMIT UI FIX.
+- Experimental v4.2.9.6 WIRE_FEED_FIX was removed from this version line.
+
+Purpose:
+- Do not change the wire-feed formulas from v4.2.9.2.
+- Add clear operator diagnostics for the rotary C-table F limiter.
+- Make it obvious when E2 stops increasing because F is limited by C-axis speed, not by the wire-feed limit.
+
+Implemented UI/logic changes:
+1. Added visible C-limiter status for rotary C strategies:
+   - Ограничитель F
+   - F заданная низ/верх, мм/мин
+   - F фактическая низ/верх, мм/мин
+   - C требуется низ/верх, град/мин
+   - C разрешено, град/мин
+   - Радиус проверки C, мм
+2. Added warning when C-axis auto-limiter reduces F:
+   - E0/E2/energy/time are calculated from effective F, not requested F.
+3. Added info when C does not limit F.
+4. Added info when auto-limiting is disabled.
+
+Numerical verification:
+Case A: rotary C rings, F requested 650/730 mm/min, C max 300 deg/min, check radius 18 mm.
+- Required C for bottom feed: 2069.014 deg/min.
+- Allowed C: 300 deg/min.
+- Effective F bottom: 94.248 mm/min.
+- Result: limited by C-axis. PASS.
+
+Case B: same F requested 650/730 mm/min, C max 10000 deg/min.
+- Required C for bottom feed: 2069.014 deg/min.
+- Allowed C: 10000 deg/min.
+- Effective F bottom remains 650 mm/min.
+- Result: not limited. PASS.
+
+Case C: C max 300 deg/min, auto-limit disabled.
+- Required C is above allowed C.
+- Effective F remains requested F because limiter is off.
+- UI reason: автоограничение выключено. PASS.
+
+Automated checks:
+- Windows py_compile app/core/cli: PASS
+- Linux py_compile app/core/cli: PASS
+- Extracted helper tests: PASS
+- UI source text checks for new rows/warnings: PASS
+- CLI CSV generation Windows: PASS
+- CLI CSV generation Linux: PASS
+
+Important note:
+This version intentionally does not include the earlier WIRE_FEED_FIX behavior. It is a clean continuation from v4.2.9.2 focused on explaining and displaying the C-axis limiter chain.

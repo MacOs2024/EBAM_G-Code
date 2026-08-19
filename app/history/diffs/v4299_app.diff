@@ -1,0 +1,222 @@
+--- v4298_merge/EBAM_Gcode_Studio_v4_2_9_8_WINDOWS_C_CONTINUOUS_CONTROLS_QA_FIX/app.py	2026-07-08 15:19:55.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_9_WINDOWS_EXPERIENCE_PROFILE_MERGE/app.py	2026-07-09 14:46:31.759077421 +0000
+@@ -23,11 +23,12 @@
+     rotational_shell_summary, rotational_shell_polygons_at_z, generate_rotational_shell,
+     rotational_shell_outer_radius, rotational_ring_segments_at_z, rotational_spiral_segments_at_z,
+     rotational_layer_radii_at_z, rotary_c_speed_deg_min,
++    build_experience_calibration_profile, experience_profile_to_json, experience_profile_to_csv,
+     _section_radii_from_polygons_for_rotary_c
+ )
+ 
+-st.set_page_config(page_title="EBAM G-Code Studio v4.2.9.8", layout="wide")
+-st.title("EBAM G-Code Studio v4.2.9.8")
++st.set_page_config(page_title="EBAM G-Code Studio v4.2.9.9", layout="wide")
++st.title("EBAM G-Code Studio v4.2.9.9")
+ st.caption("Простой и расширенный режимы • расчёт • предпросмотр • G-code • обратный анализ")
+ 
+ st.info("Стартовый расчёт для EBAM. Перед полной деталью: предпросмотр, TEST Z10–15 мм, сухой прогон, проверка W-ретракта.")
+@@ -277,7 +278,7 @@
+         zf.writestr(f"ebam_settings_v4291_{suffix}.json", settings_json)
+         zf.writestr(
+             "README_RESULT_RU.txt",
+-            "EBAM G-Code Studio v4.2.9.8\n"
++            "EBAM G-Code Studio v4.2.9.9\n"
+             "Комплект результата: G-code, таблица слоёв, аудит и JSON-настройки.\n"
+             "Перед реальной наплавкой: viewer/simulation -> сухой прогон без луча и проволоки -> проверка W -> TEST Z10-15 мм.\n"
+         )
+@@ -490,7 +491,7 @@
+ def _wire_for_feed(settings: ProcessSettings, feed_mm_min: float, ratio: float = 0.0) -> float:
+     """Wire feed E2 from the same rule used by core.layer_parameters().
+ 
+-    v4.2.9.8 supports operator wire mode:
++    v4.2.9.9 supports operator wire mode:
+     - auto: recalculate E2 from F, Z-step and hatch/radial step;
+     - manual_constant: use one fixed E2;
+     - manual_bottom_top: interpolate E2 over height.
+@@ -573,7 +574,7 @@
+ def _rotary_c_radius_limit_info(summary: dict, settings: ProcessSettings) -> dict:
+     """Choose the radius used for the UI-level C feed limiter.
+ 
+-    v4.2.9.8 separates two meanings that were previously mixed:
++    v4.2.9.9 separates two meanings that were previously mixed:
+     - rotary_c_min_radius_mm is only a warning threshold for small radii;
+     - the C limiter uses the real/estimated minimum toolpath radius when geometry is known.
+ 
+@@ -718,7 +719,7 @@
+ def _apply_rotary_c_feed_limit_to_settings(summary: dict, settings: ProcessSettings):
+     """Apply C-axis speed cap to visible/global F when rotary C auto-limit is enabled.
+ 
+-    v4.2.9.8 applies the C limit before the calculation table and before G-code generation.
++    v4.2.9.9 applies the C limit before the calculation table and before G-code generation.
+     Therefore every downstream value is recalculated from effective F: E0, E2,
+     J/mm, J/mm3, time estimate and warnings. The generator still keeps per-ring
+     protection as a second safety layer.
+@@ -1181,7 +1182,7 @@
+             rotary_c_min_radius_mm = st.number_input(
+                 "Предупреждать радиус ниже, мм (не ограничивает F при известной геометрии)",
+                 min_value=0.1, max_value=500.0, value=18.0, step=1.0,
+-                help="Порог предупреждения для малых C-радиусов. В v4.2.9.8 он не режет F, если программа знает реальные радиусы колец; C-лимит считает по реальному Rmin траектории. Для STL/неизвестной геометрии может использоваться как осторожный fallback.",
++                help="Порог предупреждения для малых C-радиусов. В v4.2.9.9 он не режет F, если программа знает реальные радиусы колец; C-лимит считает по реальному Rmin траектории. Для STL/неизвестной геометрии может использоваться как осторожный fallback.",
+                 key=f"{key_prefix}_rmin",
+             )
+         rotary_c_auto_limit_feed = st.checkbox("Автоограничивать F по лимиту C", value=True, key=f"{key_prefix}_autof")
+@@ -2599,8 +2600,23 @@
+         st.error(f"Ошибка подготовки CSV: {exc}")
+         st.stop()
+ 
++
++# ------------------------- optional experience profile from calibration tab -------------------------
++_experience_json_from_session = st.session_state.get("experience_profile_json", "")
++if st.session_state.get("experience_profile_apply_now", False) and _experience_json_from_session:
++    settings = replace(
++        settings,
++        experience_profile_enabled=True,
++        experience_profile_json=str(_experience_json_from_session),
++        experience_profile_apply_cfeed=bool(st.session_state.get("experience_profile_apply_cfeed", True)),
++        experience_profile_apply_wire=bool(st.session_state.get("experience_profile_apply_wire", True)),
++        experience_profile_apply_current=bool(st.session_state.get("experience_profile_apply_current", False)),
++        experience_profile_apply_z_step=bool(st.session_state.get("experience_profile_apply_z_step", True)),
++        experience_profile_update_m68_at_zone_boundaries=bool(st.session_state.get("experience_profile_update_m68_at_zone_boundaries", False)),
++    )
++
+ # ------------------------- main tabs -------------------------
+-tabs = st.tabs(["🏠 Сводка", "📘 Инструкция", "👁️ Предпросмотр", "⚙️ Генерация", "🧩 JSON"])
++tabs = st.tabs(["🏠 Сводка", "📘 Инструкция", "👁️ Предпросмотр", "⚙️ Генерация", "🧩 JSON", "🧪 Калибровка"])
+ 
+ with tabs[0]:
+     st.caption(f"Режим интерфейса: {ui_mode_ru}. Технологическая цель: {mode}. Материал: {mat_labels[material_key]}.")
+@@ -3035,6 +3051,134 @@
+     st.code(settings_json_now, language="json")
+ 
+ 
++with tabs[5]:
++    st.subheader("Калибровка по фактическому опыту")
++    st.caption("Идея из внешнего отчёта: измерили реальную деталь и ручные override - получили следующий зонный профиль C/E2/E0/Z, не копируя высокую E2 слепо.")
++    if st.session_state.get("experience_profile_apply_now", False):
++        st.success("Профиль калибровки сейчас применён к генератору. Он особенно полезен для режима: Поворотный стол C -> одно кольцо, C без остановки, переход C+Z.")
++    else:
++        st.info("Профиль пока не применён. Можно рассчитать, скачать JSON/CSV, затем нажать 'Применить профиль к генератору'.")
++
++    # Defaults from current geometry/settings.
++    _h = float(summary.get("size_z", 100.0))
++    _r_default = 39.5
++    try:
++        if src_type == "Чаши/баллоны":
++            _rs = rotational_layer_radii_at_z(min(_h * 0.5, _h - 1e-4), rotational_params, settings)
++            if _rs:
++                _r_default = float(sum(_rs) / len(_rs))
++    except Exception:
++        pass
++    _c_default = rotary_c_speed_deg_min(float(settings.feed_bottom_mm_min), _r_default)
++    _area = settings.wire_area_mm2()
++    _e2_auto_default = max(0.0, float(settings.layer_height) * (float(settings.feed_bottom_mm_min) / 60.0) * float(settings.hatch_spacing) / max(_area * float(settings.deposition_efficiency), 1e-9))
++    _e0_default = float(getattr(settings, "beam_current_bottom_ma", 0.0) or 0.0)
++    if str(getattr(settings, "beam_current_mode", "energy")).lower() == "energy":
++        _e0_default = float(settings.target_energy_bottom_j_per_mm) * float(settings.feed_bottom_mm_min) / max(60.0 * float(settings.voltage_kv), 1e-9)
++
++    colc1, colc2, colc3 = st.columns(3)
++    with colc1:
++        cal_height = st.number_input("Высота программы, мм", min_value=1.0, max_value=1000.0, value=float(_h), step=1.0, key="cal_height")
++        cal_z = st.number_input("Базовый Z-шаг, мм", min_value=0.05, max_value=5.0, value=float(settings.layer_height), step=0.05, format="%.3f", key="cal_z")
++        cal_r = st.number_input("Радиус траектории C, мм", min_value=0.1, max_value=1000.0, value=float(_r_default), step=0.5, format="%.3f", key="cal_r")
++        cal_c_code = st.number_input("Cfeed исходный, град/мин", min_value=0.0, max_value=20000.0, value=float(_c_default), step=10.0, format="%.3f", key="cal_c_code")
++    with colc2:
++        cal_e2_code = st.number_input("E2 исходная, мм/с", min_value=0.0, max_value=100.0, value=float(_e2_auto_default), step=0.1, format="%.3f", key="cal_e2_code")
++        cal_e0_code = st.number_input("E0 исходный, мА", min_value=0.0, max_value=100.0, value=float(_e0_default), step=0.5, format="%.3f", key="cal_e0_code")
++        cal_u = st.number_input("Напряжение U, кВ", min_value=1.0, max_value=200.0, value=float(settings.voltage_kv), step=1.0, format="%.3f", key="cal_u")
++        cal_wire_d = st.number_input("Диаметр проволоки, мм", min_value=0.1, max_value=5.0, value=float(settings.wire_diameter_mm), step=0.1, format="%.3f", key="cal_wire_d")
++    with colc3:
++        cal_actual_h = st.number_input("Фактическая высота детали, мм", min_value=0.0, max_value=1000.0, value=min(float(_h), 88.25), step=0.5, format="%.3f", key="cal_actual_h")
++        cal_od = st.number_input("Наружный диаметр OD, мм", min_value=0.0, max_value=1000.0, value=86.13, step=0.5, format="%.3f", key="cal_od")
++        cal_id = st.number_input("Внутренний диаметр ID, мм", min_value=0.0, max_value=1000.0, value=71.82, step=0.5, format="%.3f", key="cal_id")
++        cal_wall_meas = st.number_input("Измеренная стенка, мм (0 = по OD/ID)", min_value=0.0, max_value=200.0, value=0.0, step=0.1, format="%.3f", key="cal_wall_meas")
++
++    st.markdown("### Цель и ручные поправки")
++    colg1, colg2, colg3 = st.columns(3)
++    with colg1:
++        cal_target_wall = st.number_input("Целевая толщина стенки, мм", min_value=0.1, max_value=50.0, value=4.0, step=0.25, format="%.3f", key="cal_target_wall")
++        cal_problem_h = st.number_input("С какой высоты началась проблема, мм", min_value=0.0, max_value=1000.0, value=float(_h) * 0.55, step=1.0, format="%.3f", key="cal_problem_h")
++        cal_z_offset = st.number_input("Макс. ручной Z-offset, мм", min_value=-100.0, max_value=100.0, value=-10.0, step=0.5, format="%.3f", key="cal_z_offset")
++        cal_test_h = st.number_input("Высота тестового G-code, мм", min_value=1.0, max_value=1000.0, value=25.0, step=1.0, format="%.3f", key="cal_test_h")
++    with colg2:
++        cal_feed_st = st.number_input("Feed/C override стабильная зона, %", min_value=0.0, max_value=300.0, value=100.0, step=5.0, format="%.3f", key="cal_feed_st")
++        cal_wire_st = st.number_input("Wire override стабильная зона, %", min_value=0.0, max_value=500.0, value=100.0, step=5.0, format="%.3f", key="cal_wire_st")
++        cal_cur_st = st.number_input("Current override стабильная зона, %", min_value=0.0, max_value=300.0, value=100.0, step=5.0, format="%.3f", key="cal_cur_st")
++        cal_capture_min = st.number_input("Минимальная E2 для захвата ванны, мм/с", min_value=0.0, max_value=100.0, value=0.0, step=0.1, format="%.3f", key="cal_capture_min")
++    with colg3:
++        cal_feed_up = st.number_input("Feed/C override верхняя зона, %", min_value=0.0, max_value=300.0, value=100.0, step=5.0, format="%.3f", key="cal_feed_up")
++        cal_wire_up = st.number_input("Wire override верхняя зона, %", min_value=0.0, max_value=500.0, value=100.0, step=5.0, format="%.3f", key="cal_wire_up")
++        cal_cur_up = st.number_input("Current override верхняя зона, %", min_value=0.0, max_value=300.0, value=100.0, step=5.0, format="%.3f", key="cal_cur_up")
++
++    profile = build_experience_calibration_profile(
++        program_height_mm=cal_height,
++        base_z_step_mm=cal_z,
++        radius_mm=cal_r,
++        cfeed_code_deg_min=cal_c_code,
++        e2_code_mm_s=cal_e2_code,
++        e0_code_ma=cal_e0_code,
++        voltage_kv=cal_u,
++        wire_diameter_mm=cal_wire_d,
++        actual_height_mm=cal_actual_h,
++        outer_diameter_mm=cal_od,
++        inner_diameter_mm=cal_id,
++        measured_wall_mm=cal_wall_meas,
++        target_wall_mm=cal_target_wall,
++        problem_start_height_mm=cal_problem_h,
++        max_z_offset_mm=cal_z_offset,
++        feed_override_stable_pct=cal_feed_st,
++        wire_override_stable_pct=cal_wire_st,
++        current_override_stable_pct=cal_cur_st,
++        feed_override_upper_pct=cal_feed_up,
++        wire_override_upper_pct=cal_wire_up,
++        current_override_upper_pct=cal_cur_up,
++        capture_wire_min_mm_s=cal_capture_min,
++        test_height_mm=cal_test_h,
++    )
++    profile_json = experience_profile_to_json(profile)
++    profile_csv = experience_profile_to_csv(profile)
++
++    st.markdown("### Расчётный профиль зон")
++    st.dataframe(pd.DataFrame(profile.get("zones", [])), use_container_width=True)
++    for w in profile.get("warnings", []) or []:
++        st.warning(w)
++
++    cola, colb, colc = st.columns(3)
++    with cola:
++        st.download_button("Скачать profile.json", profile_json, file_name="ebam_experience_profile_v4299.json", mime="application/json")
++    with colb:
++        st.download_button("Скачать profile.csv", profile_csv, file_name="ebam_experience_profile_v4299.csv", mime="text/csv")
++    with colc:
++        st.download_button("Скачать краткий отчёт .txt", "EXPERIENCE PROFILE\n\n" + profile_json, file_name="ebam_experience_profile_report_v4299.txt", mime="text/plain")
++
++    st.markdown("### Применение профиля к генератору")
++    st.caption("Для полной непрерывности E0/E2 по умолчанию НЕ меняются внутри движения: приложение командует одно среднее значение. Cfeed и Z-step могут меняться по зонам без M68.")
++    ac1, ac2, ac3, ac4 = st.columns(4)
++    with ac1:
++        apply_c = st.checkbox("Применять Cfeed по зонам", value=True, key="cal_apply_c")
++    with ac2:
++        apply_e2 = st.checkbox("Применять E2 по зонам", value=True, key="cal_apply_e2")
++    with ac3:
++        apply_e0 = st.checkbox("Применять E0 по зонам", value=False, key="cal_apply_e0")
++    with ac4:
++        apply_z = st.checkbox("Применять Z-step по зонам", value=True, key="cal_apply_z")
++    m68_inside = st.checkbox("Разрешить M68 E0/E2 на границах зон (может дать микропаузу)", value=False, key="cal_m68_inside")
++    if st.button("Применить профиль к генератору", type="primary"):
++        st.session_state["experience_profile_json"] = profile_json
++        st.session_state["experience_profile_apply_now"] = True
++        st.session_state["experience_profile_apply_cfeed"] = bool(apply_c)
++        st.session_state["experience_profile_apply_wire"] = bool(apply_e2)
++        st.session_state["experience_profile_apply_current"] = bool(apply_e0)
++        st.session_state["experience_profile_apply_z_step"] = bool(apply_z)
++        st.session_state["experience_profile_update_m68_at_zone_boundaries"] = bool(m68_inside)
++        st.rerun()
++    if st.button("Сбросить применённый профиль"):
++        st.session_state["experience_profile_apply_now"] = False
++        st.session_state["experience_profile_json"] = ""
++        st.rerun()
++
++
++
+ 
+ st.markdown("---")
+ st.caption("By Керенцев Максим")

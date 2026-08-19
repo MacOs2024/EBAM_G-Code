@@ -1,0 +1,104 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_21_CONST_VELOCITY/ebam_gcode_studio/core.py	2026-07-16 23:19:55.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_21_CONST_VELOCITY/ebam_gcode_studio/core.py	2026-07-18 00:20:25.048513376 +0000
+@@ -1,4 +1,4 @@
+-"""EBAM G-code Studio core v4.2.9.21.
++"""EBAM G-code Studio core v4.2.9.22.
+ 
+ STL/DXF/CSV -> layer slicing -> EBAM-oriented G-code.
+ Designed for Bormash/FABMETALL-style electron-beam wire deposition.
+@@ -29,8 +29,8 @@
+ Point = Tuple[float, float]
+ Segment = Tuple[float, float, float, float]
+ 
+-APP_VERSION = "v4.2.9.21"
+-EXPERIENCE_PROFILE_VERSION = "v4.2.9.21-experience-profile"
++APP_VERSION = "v4.2.9.22"
++EXPERIENCE_PROFILE_VERSION = "v4.2.9.22-experience-profile"
+ 
+ 
+ BORMASH_LIMITS = {
+@@ -170,7 +170,7 @@
+     # no_pause_flat_rings = C360 at fixed Z, then C+transition_deg with Z+layer_height while E0/E2 stay ON.
+     rotary_c_motion_mode: str = "separate_rings"
+     rotary_c_transition_angle_deg: float = 17.0
+-    # v4.2.9.21: radial feed-rate compensation for C-table rings. Field problem
++    # v4.2.9.22: radial feed-rate compensation for C-table rings. Field problem
+     # (Flange1_R6): with constant C, the outer rings run much faster linearly
+     # (v = C*pi*R/180 grows with R), so the volume balance drives wire feed E2 up
+     # 3-4x while beam power stays capped -> energy density collapses and the wire
+@@ -966,7 +966,7 @@
+             base = layer_parameters(z, height, effective_settings)
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+             max_c_required = max(max_c_required, required_c)
+-            # v4.2.9.21: radial feed-rate compensation (constant-velocity mode).
++            # v4.2.9.22: radial feed-rate compensation (constant-velocity mode).
+             c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
+                 effective_settings, radius, base.feed_mm_min)
+             if radius < float(effective_settings.rotary_c_min_radius_mm):
+@@ -1720,7 +1720,7 @@
+             pitch_factor = 1.0
+         else:
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+-            # v4.2.9.21: radial feed-rate compensation (constant-velocity mode).
++            # v4.2.9.22: radial feed-rate compensation (constant-velocity mode).
+             c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
+                 effective_settings, radius, base.feed_mm_min)
+         max_c_required = max(max_c_required, required_c)
+@@ -2000,7 +2000,7 @@
+             base = layer_parameters(z, height, effective_settings)
+             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+             max_c_required = max(max_c_required, required_c)
+-            # v4.2.9.21: radial feed-rate compensation (constant-velocity mode).
++            # v4.2.9.22: radial feed-rate compensation (constant-velocity mode).
+             c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
+                 effective_settings, radius, base.feed_mm_min)
+             if radius < float(effective_settings.rotary_c_min_radius_mm):
+@@ -2939,7 +2939,7 @@
+         raise ValueError("rotational_path_strategy должен быть 'hatch', 'rings/xy_rings', 'spiral/xy_spiral', 'rotary_c_rings' или 'stl_rotary_c_rings'")
+     if float(getattr(settings, "rotational_radial_step_mm", 0.0)) < 0:
+         raise ValueError("rotational_radial_step_mm должен быть >= 0")
+-    # v4.2.9.21 (ported from v4.2.9.16): radial step = 0 must NOT silently collapse to
++    # v4.2.9.22 (ported from v4.2.9.16): radial step = 0 must NOT silently collapse to
+     # hatch_spacing for a rotational strategy. Field case Flange_V1: radial_step=0
+     # stacked all rings on one line -> a cup/cone instead of a flat disc, +6x layer
+     # height. Also inflates ring count and wrecks the time estimate.
+@@ -2957,7 +2957,10 @@
+                 "стратегии '" + _strat + "'. Нулевой шаг схлопывает все кольца в одну линию "
+                 "(чаша/конус вместо плоского диска, высота слоя кратно превышает заданную, "
+                 "а оценка времени становится неверной). Задайте шаг > 0 (обычно 0.6-0.8 ширины "
+-                "валика) или включите авто-шаг от ширины валика (auto_hatch_from_bead + bead_width_mm > 0)."
++                "валика — имеется в виду ДОЛЯ ширины: для валика 4 мм это 2.4-3.2 мм; чаще всего "
++                "радиальный шаг ставят РАВНЫМ полю «Шаг дорожек») или включите авто-шаг от ширины "
++                "валика (auto_hatch_from_bead + bead_width_mm > 0). "
++                + f"Подсказка: сейчас «Шаг дорожек» (hatch_spacing) = {float(getattr(settings, 'hatch_spacing', 0.0)):.2f} мм."
+             )
+         _eff = _effective_rotational_radial_step(settings)
+         if _eff < 0.3:
+@@ -3882,18 +3885,22 @@
+                 base = layer_parameters(z, height, effective_settings)
+                 required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
+                 max_c_required = max(max_c_required, required_c)
+-                actual_feed = base.feed_mm_min
+-                c_feed = required_c
++                # v4.2.9.22: CV radial compensation now also covers the special
++                # cup/balloon STL path (his Flange1 route) - previously this loop
++                # ignored rotary_c_constant_velocity entirely.
++                c_feed, actual_feed, pitch_factor = _rotary_c_ring_kinematics(
++                    effective_settings, radius, base.feed_mm_min)
+                 if radius < float(effective_settings.rotary_c_min_radius_mm):
+                     small_radius_count += 1
+-                if required_c > float(effective_settings.rotary_c_max_deg_min) + 1e-9:
++                if (not bool(getattr(effective_settings, "rotary_c_constant_velocity", False))
++                        and required_c > float(effective_settings.rotary_c_max_deg_min) + 1e-9):
+                     if bool(getattr(effective_settings, "rotary_c_auto_limit_feed", True)):
+-                        c_feed = float(effective_settings.rotary_c_max_deg_min)
+-                        actual_feed = c_feed * math.pi * float(radius) / 180.0
+                         feed_limited_count += 1
+                     else:
+                         warnings.append(f"WARNING: layer {idx} radius {radius:.3f} requires C feed {required_c:.1f} deg/min above limit {effective_settings.rotary_c_max_deg_min:.1f}")
+                 layer = _layer_parameters_with_feed(z, height, effective_settings, actual_feed)
++                if pitch_factor < 0.999:
++                    layer.wire_mm_s = float(layer.wire_mm_s) * pitch_factor
+                 layer.index = idx
+                 layer.segments_count = 1
+                 layer.path_length_mm = 2.0 * math.pi * float(radius)

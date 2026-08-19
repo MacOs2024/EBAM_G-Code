@@ -1,0 +1,177 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_23_THERMAL_DWELL/app.py	2026-07-18 12:37:38.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_23_THERMAL_DWELL/app.py	2026-07-20 00:27:02.477791241 +0000
+@@ -420,7 +420,7 @@
+                     circ = 2.0 * math.pi * r_k
+                     # linear feed actually usable at this radius under the C cap
+                     if bool(getattr(settings, "rotary_c_constant_velocity", False)):
+-                        # v4.2.9.23: mirror the generator's CV kinematics exactly,
++                        # v4.2.9.24: mirror the generator's CV kinematics exactly,
+                         # so the pre-generation estimate matches the real G-code.
+                         from ebam_gcode_studio.core import _rotary_c_ring_kinematics as _cvk
+                         _c_e, _f_e, _pf_e = _cvk(settings, r_k, avg_f)
+@@ -878,7 +878,7 @@
+     if not bool(getattr(settings, "rotary_c_auto_limit_feed", True)):
+         return settings, _rotary_c_limit_status(summary, settings, None)
+     if bool(getattr(settings, "rotary_c_constant_velocity", False)):
+-        # v4.2.9.23: CV mode computes speed per ring itself; the GLOBAL clamp by the
++        # v4.2.9.24: CV mode computes speed per ring itself; the GLOBAL clamp by the
+         # fallback radius (18 mm) crushed F to ~188 mm/min and poisoned E2/energy/
+         # time in the summary and in separate-ring generators. Skip the clamp.
+         st = _rotary_c_limit_status(summary, settings, None)
+@@ -921,7 +921,7 @@
+       conservative boundaries. It NEVER raises current_max_ma automatically:
+       current_max_ma is a user-selected equipment/process limit.
+ 
+-    v4.2.9.23: selectable levers. `levers` is a dict describing which parameters
++    v4.2.9.24: selectable levers. `levers` is a dict describing which parameters
+     the operator ALLOWS the tuner to change, each with an optional hard limit:
+         {
+           "layer_height":   {"enabled": bool, "max": mm},      # thicker -> fewer layers
+@@ -996,7 +996,7 @@
+         # Experimental wider range. The UI will warn about quality loss.
+         layer_max_extreme = 1.20
+         hatch_max_extreme = 6.00
+-    # v4.2.9.23: honour user hard caps on the geometric levers. A disabled lever is
++    # v4.2.9.24: honour user hard caps on the geometric levers. A disabled lever is
+     # pinned to its base value (min==max==base) so the loop cannot move it.
+     if allow_layer:
+         if cap_layer is not None:
+@@ -1103,7 +1103,7 @@
+     plan["error_pct"] = err_pct
+     plan["possible"] = abs(err_pct) <= 18.0
+     plan["severity"] = "ok" if abs(err_pct) <= 10.0 else ("warn" if abs(err_pct) <= 25.0 else "bad")
+-    # v4.2.9.23: record which levers were active and the achievable bound, so the UI
++    # v4.2.9.24: record which levers were active and the achievable bound, so the UI
+     # can tell the operator exactly why a target could not be met and what to relax.
+     plan["levers_active"] = {
+         "layer_height": allow_layer, "radial_step": allow_step,
+@@ -2081,7 +2081,7 @@
+             target_fit_mode = "full_process"
+         target_total_s = (int(target_hours) * 3600 + int(target_minutes) * 60) if target_time_enabled else 0
+ 
+-        # v4.2.9.23: selectable regulation levers. Each lever: allow to change + hard limit.
++        # v4.2.9.24: selectable regulation levers. Each lever: allow to change + hard limit.
+         # E2 (wire) is ALWAYS dependent (computed from geometry x speed) to prevent over-feed.
+         time_levers = None
+         if target_time_enabled:
+@@ -3210,15 +3210,22 @@
+ 
+ with tabs[0]:
+     st.caption(f"Режим интерфейса: {ui_mode_ru}. Технологическая цель: {mode}. Материал: {mat_labels[material_key]}.")
+-    col_a, col_b = st.columns([1, 1])
++    _focus = bool(time_plan.get("enabled"))
++    if _focus:
++        st.info("🎯 Режим целевого времени: ниже показан только итоговый режим. Полные таблицы и рекомендации свёрнуты — раскрой при необходимости.")
++    col_a, col_b = (st.columns([1, 3]) if _focus else st.columns([1, 1]))
+     with col_a:
+-        st.subheader(f"Анализ геометрии: {source_info}")
+-        summary_df = pd.DataFrame({"значение": [str(v) for v in summary.values()]}, index=list(summary.keys()))
+-        st.table(summary_df)
+-        if src_type == "STL 3D" and not summary["is_watertight"]:
+-            st.warning("STL не замкнутый. Сечения могут получиться неполными. Для точного расчёта лучше замкнутая STL-модель.")
++        _geo_box = st.expander("Анализ геометрии", expanded=False) if _focus else st.container()
++        with _geo_box:
++            st.subheader(f"Анализ геометрии: {source_info}")
++            summary_df = pd.DataFrame({"значение": [str(v) for v in summary.values()]}, index=list(summary.keys()))
++            st.table(summary_df)
++            if src_type == "STL 3D" and not summary["is_watertight"]:
++                st.warning("STL не замкнутый. Сечения могут получиться неполными. Для точного расчёта лучше замкнутая STL-модель.")
+     with col_b:
+-        st.subheader("Расчётные значения")
++        _calc_box = st.expander("📊 Все расчётные значения (полная таблица)", expanded=False) if _focus else st.container()
++        if not _focus:
++            st.subheader("Расчётные значения")
+         height = max(float(summary["size_z"]), 1e-9)
+         n_layers = int(math.ceil(height / settings.layer_height))
+         area_wire = settings.wire_area_mm2()
+@@ -3244,7 +3251,8 @@
+         calc_rows = _build_calc_rows(settings, n_layers, area_wire, recalc, cinfo, eta, _fmt_hm, _err_step)
+         calc_df = pd.DataFrame(calc_rows, columns=["Параметр", "Значение"])
+         calc_df["Значение"] = calc_df["Значение"].map(str)
+-        st.table(calc_df.set_index("Параметр"))
++        with _calc_box:
++            st.table(calc_df.set_index("Параметр"))
+         cinfo = time_plan.get("c_limit_info")
+         if cinfo and cinfo.get("radius_below_warning"):
+             st.warning(
+@@ -3279,14 +3287,14 @@
+                         f"{recalc['effective_actual_energy_bottom']:.1f}/{recalc['effective_actual_energy_top']:.1f} Дж/мм",
+                     ],
+                 }).set_index("Параметр"))
+-            else:
++            elif not _focus:
+                 st.info(
+                     f"C-ограничитель: {cinfo['reason']}. Требуется C "
+                     f"{cinfo['required_c_bottom']:.1f}/{cinfo['required_c_top']:.1f} град/мин, "
+                     f"разрешено {cinfo['cmax_deg_min']:.1f} град/мин. "
+                     f"Радиус для C-лимита: {cinfo['radius_mm']:.2f} мм, источник: {cinfo.get('radius_source','—')}."
+                 )
+-        if eta.get("strategy_note"):
++        if eta.get("strategy_note") and not _focus:
+             st.caption("Оценка времени учитывает стратегию: " + str(eta.get("strategy_note")))
+ 
+         gate_level, gate_title, gate_messages = _safety_gate_status(
+@@ -3297,6 +3305,8 @@
+             st.error(f"{gate_title}\n\n{gate_text}")
+         elif gate_level == "warn":
+             st.warning(f"{gate_title}\n\n{gate_text}")
++        elif _focus:
++            st.caption("✅ " + gate_title)
+         else:
+             st.success(f"{gate_title}\n\n{gate_text}")
+ 
+@@ -3329,16 +3339,42 @@
+                 })
+                 applied_df["Применено"] = applied_df["Применено"].map(str)
+                 st.table(applied_df.set_index("Параметр"))
+-            for msg in time_plan.get("messages", []):
++            _mode_rows = [
++                ("Радиальный шаг колец, мм", f"{_err_step(settings):.3f}"),
++                ("Подача проволоки E2 низ/верх, мм/с", f"{wire_bottom:.2f} / {wire_top:.2f}  (граница {settings.wire_max_mm_s:.1f})"),
++                ("Ток в G-code низ/верх, мА", f"{current_bottom:.2f} / {current_top:.2f}  (лимит {settings.current_max_ma:.1f})"),
++                ("Мощность пучка низ/верх, Вт", f"{settings.voltage_kv*current_bottom:.0f} / {settings.voltage_kv*current_top:.0f}  (порог {settings.min_beam_power_w:.0f})"),
++            ]
++            _ci = time_plan.get("c_limit_info") or {}
++            if _ci.get("required_c_bottom") is not None:
++                _mode_rows.append(("C требуется низ/верх, град/мин",
++                                   f"{_ci.get('required_c_bottom', 0):.0f} / {_ci.get('required_c_top', 0):.0f}  (разрешено {_ci.get('cmax_deg_min', 0):.0f})"))
++            _mode_rows += [
++                ("Время активной наплавки", _fmt_hm(eta.get("active_s", 0.0))),
++                ("Паузы и тепловые выдержки", _fmt_hm(max(0.0, eta.get("total_s", 0.0) - eta.get("active_s", 0.0)))),
++                ("ПОЛНОЕ время", _fmt_hm(eta.get("total_s", 0.0))),
++            ]
++            st.markdown("**Итог режима под целевое время**")
++            st.table(pd.DataFrame(_mode_rows, columns=["Параметр", "Значение"]).set_index("Параметр"))
++            _crit_kw = ("выше вашей контрольной границы", "не уложиться", "Минимально достижимо", "разрешите")
++            _msgs = list(dict.fromkeys(time_plan.get("messages", [])))
++            _crit = [m for m in _msgs if any(k in m for k in _crit_kw)]
++            _soft = [m for m in _msgs if m not in _crit]
++            for msg in _crit:
+                 st.warning(msg)
++            if _soft:
++                _det_box = st.expander("Подробности и рекомендации", expanded=False) if _focus else st.container()
++                with _det_box:
++                    for msg in _soft:
++                        st.warning(msg)
+         max_wire_calc = max(wire_bottom, wire_top)
+-        if max_wire_calc > settings.wire_max_mm_s:
++        if max_wire_calc > settings.wire_max_mm_s and not _focus:
+             st.warning(
+                 f"Расчётная подача проволоки {max_wire_calc:.3f} мм/с выше вашей контрольной границы {settings.wire_max_mm_s:.3f} мм/с. "
+                 "В v4.2 это НЕ ошибка и НЕ автоматический зажим: G-code будет рассчитан с фактической требуемой подачей. "
+                 "Если механизм подачи реально допускает такую скорость — увеличьте контрольную границу. Если нет — уменьшите Z-шаг, шаг дорожек или скорость F."
+             )
+-        elif max_wire_calc > settings.wire_max_mm_s * 0.85:
++        elif max_wire_calc > settings.wire_max_mm_s * 0.85 and not _focus:
+             st.info("Подача проволоки близко к верхней контрольной границе. Для первого теста проверьте устойчивость подачи и W-ретракт на сухом прогоне.")
+         if current_bottom_need > settings.current_max_ma or current_top_need > settings.current_max_ma:
+             st.error(
+@@ -3349,7 +3385,7 @@
+             )
+         elif max(current_bottom_need, current_top_need) > settings.current_max_ma * 0.85:
+             st.info("Ток пучка близко к заданному лимиту. Для первого теста оставьте запас, особенно на тонких/острых участках.")
+-        if settings.contour_passes > 0:
++        if settings.contour_passes > 0 and not _focus:
+             st.warning("Контурные проходы улучшают край, но для боковой подачи проволоки часть контура может идти в неидеальном направлении. Проверять на коротком тесте.")
+ 
+ with tabs[1]:

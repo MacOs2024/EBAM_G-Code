@@ -1,0 +1,305 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/ebam_gcode_studio/core.py	2026-07-10 09:52:40.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/ebam_gcode_studio/core.py	2026-07-10 11:43:18.047833083 +0000
+@@ -1,4 +1,4 @@
+-"""EBAM G-code Studio core v4.2.9.10.
++"""EBAM G-code Studio core v4.2.9.11.
+ 
+ STL/DXF/CSV -> layer slicing -> EBAM-oriented G-code.
+ Designed for Bormash/FABMETALL-style electron-beam wire deposition.
+@@ -29,8 +29,8 @@
+ Point = Tuple[float, float]
+ Segment = Tuple[float, float, float, float]
+ 
+-APP_VERSION = "v4.2.9.10"
+-EXPERIENCE_PROFILE_VERSION = "v4.2.9.10-experience-profile"
++APP_VERSION = "v4.2.9.11"
++EXPERIENCE_PROFILE_VERSION = "v4.2.9.11-experience-profile"
+ 
+ 
+ BORMASH_LIMITS = {
+@@ -218,6 +218,15 @@
+     current_min_ma: float = 0.0          # hard lower clamp for E0 current; default 0 = do not force extra heat
+     current_low_warning_ma: float = 1.0  # advisory warning only; does not change G-code
+     current_max_ma: float = 50.0
++    # --- Fusion power floor (advisory), ported from parallel v4.2.9.6 branch after
++    # the real single-bead experiment: 160 J/mm at slow C-speed gave ~10.5 mA =
++    # ~630 W and lack-of-fusion balling; CURR override x2 (~21 mA = ~1.26 kW) fused.
++    # Linear energy J/mm alone does NOT guarantee substrate fusion: at low travel
++    # speed a "correct" J/mm can still mean too little absolute beam power P=U*I.
++    # ADVISORY only: never changes G-code; value MUST be calibrated per machine,
++    # wire and material from a single-bead TEST. Set 0 to disable.
++    min_beam_power_w: float = 900.0
++    power_floor_warning_enabled: bool = True
+     beam_current_mode: str = "energy"    # energy = calculate E0 from J/mm; current = use user E0 setpoint and calculate actual J/mm
+     beam_current_bottom_ma: float = 28.0  # used only when beam_current_mode == "current"
+     beam_current_top_ma: float = 25.0     # used only when beam_current_mode == "current"
+@@ -2876,6 +2885,231 @@
+     return f"{code} E{int(channel)} Q{_fmt(float(value),3)}{suffix}"
+ 
+ 
++def beam_power_floor_analysis(settings: ProcessSettings, layers: List["LayerInfo"]) -> Dict[str, Any]:
++    """Advisory beam-power (fusion) check, ported from the parallel branch.
++
++    Beam power P = U[kV] * I[mA] (numerically watts). If the calculated regime is
++    below settings.min_beam_power_w, the deposit risks lack-of-fusion / balling,
++    exactly as observed on the real plate (160 J/mm at slow C-speed -> ~630 W ->
++    balled bead; ~1.26 kW -> fused bead). Reports actual per-layer power and, when
++    below the floor, what target energy or travel speed reaches the floor. It
++    NEVER changes G-code. Calibrate the floor on a single-bead TEST.
++    """
++    u = max(float(settings.voltage_kv), 1e-9)
++    floor = float(getattr(settings, "min_beam_power_w", 0.0) or 0.0)
++    out: Dict[str, Any] = {"min_beam_power_w_floor": floor}
++    if not layers:
++        out.update({"beam_power_min_w": 0.0, "beam_power_max_w": 0.0, "beam_power_below_floor": False})
++        return out
++    powers = [u * float(li.current_ma) for li in layers]
++    p_min, p_max = min(powers), max(powers)
++    out["beam_power_min_w"] = p_min
++    out["beam_power_max_w"] = p_max
++    below = bool(getattr(settings, "power_floor_warning_enabled", True)) and floor > 0 and (p_min < floor - 1e-9)
++    out["beam_power_below_floor"] = below
++    if below:
++        weak = min(layers, key=lambda li: u * float(li.current_ma))
++        i_now = float(weak.current_ma)
++        v_now = max(float(weak.travel_speed_mm_s), 1e-9)
++        e_now = float(weak.energy_actual_j_mm if weak.energy_actual_j_mm else weak.energy_j_mm)
++        out["beam_power_weak_layer_index"] = int(getattr(weak, "index", 0))
++        out["beam_power_current_now_ma"] = i_now
++        out["beam_power_current_needed_ma"] = floor / u
++        out["beam_power_energy_now_j_mm"] = e_now
++        out["beam_power_energy_needed_j_mm"] = floor / v_now
++        out["beam_power_speed_now_mm_s"] = v_now
++        out["beam_power_speed_for_floor_mm_s"] = floor / max(e_now, 1e-9)
++    return out
++
++
++def generate_calibration_beads(settings: ProcessSettings,
++                               currents_ma: List[float],
++                               feeds_mm_min: List[float],
++                               bead_length_mm: float = 40.0,
++                               bead_spacing_mm: float = 10.0,
++                               col_gap_mm: float = 12.0,
++                               origin_x_mm: float = 15.0,
++                               origin_y_mm: float = 15.0,
++                               wire_mode: str = "auto",
++                               wire_fixed_mm_s: float = 3.5,
++                               z_mm: float = 0.0) -> GenerationResult:
++    """Single-bead calibration matrix (ported from the parallel branch).
++
++    Straight test beads on a plate: rows = beam currents, columns = travel feeds.
++    Every bead uses the proven safe per-segment emitter (beam off + Z-hop between
++    beads, no G0 under beam, W balance, no overrides touched, M68 only). Measure
++    real width/height/fusion per bead, then analyze_calibration_results() derives
++    the machine's true fusion power floor, Z-step, hatch/radial step and eta.
++    """
++    currents = [float(c) for c in currents_ma if float(c) > 0]
++    feeds = [float(f) for f in feeds_mm_min if float(f) > 0]
++    if not currents or not feeds:
++        raise ValueError("Калибровка: нужен хотя бы один ток > 0 и одна скорость > 0")
++    if bead_length_mm <= 2.0:
++        raise ValueError("Калибровка: длина валика должна быть больше 2 мм")
++    eff = replace(settings, beam_current_mode="current")
++    area = eff.wire_area_mm2()
++    beads: List[Dict[str, Any]] = []
++    bead_id = 0
++    x_max_used = origin_x_mm
++    y_max_used = origin_y_mm
++    gcode_lines: List[str] = []
++    for row, cur in enumerate(currents):
++        for col, f in enumerate(feeds):
++            bead_id += 1
++            travel = f / 60.0
++            if str(wire_mode).strip().lower() == "fixed":
++                wire = max(float(wire_fixed_mm_s), 0.0)
++            else:
++                wire = eff.layer_height * travel * eff.hatch_spacing / max(area * eff.deposition_efficiency, 1e-9)
++            x0 = origin_x_mm + col * (bead_length_mm + col_gap_mm)
++            y0 = origin_y_mm + row * bead_spacing_mm
++            x1 = x0 + bead_length_mm
++            x_max_used = max(x_max_used, x1)
++            y_max_used = max(y_max_used, y0)
++            power_w = eff.voltage_kv * cur
++            e_j_mm = power_w / max(travel, 1e-9)
++            li = LayerInfo(index=bead_id, z=float(z_mm), z_next=float(z_mm + eff.layer_height), ratio=0.0,
++                           current_ma=float(cur), feed_mm_min=float(f), travel_speed_mm_s=float(travel),
++                           wire_mm_s=float(wire), energy_j_mm=float(e_j_mm), energy_actual_j_mm=float(e_j_mm),
++                           current_required_ma=float(cur), current_clipped_by_min=False,
++                           current_clipped_by_max=cur > eff.current_max_ma + 1e-9,
++                           energy_j_mm3=float(power_w / max(area * wire, 1e-9)) if wire > 0 else float("inf"),
++                           layer_pause_s=0.0, segments_count=1, path_length_mm=float(bead_length_mm))
++            gcode_lines.append(f"(BEAD {bead_id}: I={cur:.2f} mA  F={f:.1f} mm/min  E2={wire:.3f} mm/s  P={power_w:.0f} W  E={e_j_mm:.0f} J/mm)")
++            gcode_lines.extend(_beam_wire_segment_gcode((x0, y0, x1, y0), li, eff, 1.0, "hatch"))
++            beads.append({"bead_id": bead_id, "row": row + 1, "col": col + 1,
++                          "x0": x0, "y0": y0, "x1": x1, "y1": y0,
++                          "current_ma": cur, "feed_mm_min": f, "wire_mm_s": wire,
++                          "power_w": power_w, "energy_j_mm": e_j_mm})
++    stats: Dict[str, Any] = {
++        "source_type": "calibration_beads",
++        "beads_total": len(beads),
++        "currents_ma": currents, "feeds_mm_min": feeds,
++        "bead_length_mm": bead_length_mm,
++        "size_x": x_max_used + 5.0, "size_y": y_max_used + 5.0, "size_z": eff.layer_height,
++        "min_x": 0.0, "min_y": 0.0, "min_z": 0.0,
++        "max_x": x_max_used + 5.0, "max_y": y_max_used + 5.0, "max_z": eff.layer_height,
++        "gcode_lines": 0, "gcode_size_mb": 0.0,
++        "beam_power_min_w": min(b["power_w"] for b in beads),
++        "beam_power_max_w": max(b["power_w"] for b in beads),
++    }
++    header = _gcode_header(eff, stats)
++    body: List[str] = ["(CALIBRATION_BEAD_MATRIX: rows=currents, cols=feeds; measure width/height/fusion per bead)"]
++    if eff.use_w_retract and eff.w_retract_mm > 0:
++        body.append("(Initial W retract calibration)")
++        body.append("G10 L20 P0 W0")
++        body.extend(_relative_w_move(-eff.w_retract_mm, eff.w_retract_feed_mm_min))
++    footer = _gcode_footer(replace(eff, safe_z_final_mm=max(eff.safe_z_final_mm, z_mm + eff.z_hop_mm + 5.0)))
++    gcode = "\n".join(header + body + gcode_lines + footer) + "\n"
++    stats["gcode_lines"] = gcode.count("\n")
++    stats["gcode_size_mb"] = len(gcode.encode("utf-8")) / (1024.0 * 1024.0)
++    audit = audit_gcode(gcode, eff)
++    warnings: List[str] = [
++        "Calibration matrix: beads intentionally span weak-to-strong regimes; some are EXPECTED to underfuse. Run on a spare plate only.",
++        "Measure per bead: width (mm), height (mm), fused-to-plate (yes/no). Enter results in the app to derive the fusion power floor, Z-step and hatch.",
++    ]
++    header_csv = "bead_id,row,col,x0,y0,x1,y1,current_ma,feed_mm_min,wire_mm_s,power_w,energy_j_mm"
++    rows_csv = [header_csv] + [
++        f"{b['bead_id']},{b['row']},{b['col']},{b['x0']:.3f},{b['y0']:.3f},{b['x1']:.3f},{b['y1']:.3f},{b['current_ma']:.3f},{b['feed_mm_min']:.3f},{b['wire_mm_s']:.4f},{b['power_w']:.1f},{b['energy_j_mm']:.1f}"
++        for b in beads]
++    report = audit_report(replace(eff, power_floor_warning_enabled=False), stats, audit, warnings, [])
++    return GenerationResult(gcode=gcode, layer_csv="\n".join(rows_csv) + "\n", audit_text=report, stats=stats)
++
++
++def analyze_calibration_results(rows: List[Dict[str, Any]], voltage_kv: float,
++                                wire_diameter_mm: float = 1.2,
++                                overlap_model: str = "tom") -> Dict[str, Any]:
++    """Derive the machine process window from measured calibration beads.
++
++    Each row: current_ma, feed_mm_min, wire_mm_s, width_mm, height_mm, fused (bool).
++    Returns fusion power floor bracketed by real data, recommended Z-step (median
++    fused height), hatch TOM 0.738w / FOM 0.667w (median width), target J/mm
++    (median of fused) and a deposition-efficiency estimate (parabolic bead area vs
++    fed wire volume). Inconsistent data is flagged, not hidden.
++    """
++    u = max(float(voltage_kv), 1e-9)
++    area_wire = math.pi * (float(wire_diameter_mm) * 0.5) ** 2
++    clean: List[Dict[str, Any]] = []
++    for r in rows:
++        try:
++            cur = float(r.get("current_ma", 0)); f = float(r.get("feed_mm_min", 0))
++            if cur <= 0 or f <= 0:
++                continue
++            item = dict(r)
++            item["power_w"] = u * cur
++            item["travel_mm_s"] = f / 60.0
++            item["energy_j_mm"] = item["power_w"] / max(item["travel_mm_s"], 1e-9)
++            item["fused"] = bool(r.get("fused"))
++            clean.append(item)
++        except (TypeError, ValueError):
++            continue
++    out: Dict[str, Any] = {"beads_used": len(clean)}
++    if not clean:
++        out["error"] = "Нет пригодных строк: нужны ток и скорость > 0."
++        return out
++    fused = [r for r in clean if r["fused"]]
++    unfused = [r for r in clean if not r["fused"]]
++    out["fused_count"] = len(fused); out["unfused_count"] = len(unfused)
++
++    def _med(vals: List[float]) -> Optional[float]:
++        v = sorted(x for x in vals if x is not None and math.isfinite(x) and x > 0)
++        if not v:
++            return None
++        n = len(v)
++        return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
++
++    warnings: List[str] = []
++    floor_lo = max((r["power_w"] for r in unfused), default=None)
++    floor_hi = min((r["power_w"] for r in fused), default=None)
++    if floor_lo is not None and floor_hi is not None and floor_hi < floor_lo - 1e-9:
++        warnings.append(f"Данные противоречивы: проплав при {floor_hi:.0f} Вт и непроплав при {floor_lo:.0f} Вт. "
++                        "Проплав зависит не только от мощности (фокус/скорость/чистота плиты); порог взят по верхней границе непроплава.")
++        rec_floor = floor_lo * 1.1
++    elif floor_hi is not None and floor_lo is not None:
++        rec_floor = 0.5 * (floor_lo + floor_hi)
++    elif floor_hi is not None:
++        rec_floor = floor_hi
++        warnings.append("Непроплавленных валиков нет — нижняя граница не найдена; порог = слабейший проплавленный (может быть завышен).")
++    elif floor_lo is not None:
++        rec_floor = floor_lo * 1.25
++        warnings.append("Проплавленных валиков нет — порог оценён экстраполяцией (+25% к сильнейшему непроплаву). Нужны валики мощнее.")
++    else:
++        rec_floor = None
++    out["power_unfused_max_w"] = floor_lo
++    out["power_fused_min_w"] = floor_hi
++    out["recommended_min_beam_power_w"] = rec_floor
++    if fused:
++        w_med = _med([float(r.get("width_mm") or 0) for r in fused])
++        h_med = _med([float(r.get("height_mm") or 0) for r in fused])
++        out["bead_width_median_mm"] = w_med
++        out["bead_height_median_mm"] = h_med
++        if h_med:
++            out["recommended_z_step_mm"] = h_med
++        if w_med:
++            out["recommended_hatch_tom_mm"] = 0.738 * w_med
++            out["recommended_hatch_fom_mm"] = 0.667 * w_med
++            out["recommended_hatch_mm"] = (0.738 if str(overlap_model).lower() != "fom" else 0.667) * w_med
++        out["recommended_energy_j_mm"] = _med([r["energy_j_mm"] for r in fused])
++        effs = []
++        for r in fused:
++            w = float(r.get("width_mm") or 0); h = float(r.get("height_mm") or 0)
++            e2 = float(r.get("wire_mm_s") or 0); v = float(r["travel_mm_s"])
++            if w > 0 and h > 0 and e2 > 0 and v > 0:
++                fed_area = area_wire * e2 / v
++                if fed_area > 1e-9:
++                    effs.append((2.0 / 3.0) * w * h / fed_area)
++        eff_med = _med(effs)
++        if eff_med:
++            out["deposition_efficiency_estimate"] = min(eff_med, 1.5)
++            if eff_med > 1.15:
++                warnings.append(f"Оценка η {eff_med:.2f} > 1: проверьте измерения ширины/высоты или E2 — валик не может содержать больше металла, чем подано.")
++    else:
++        warnings.append("Нет проплавленных валиков — Z-step/шаг/энергия не рассчитаны.")
++    out["warnings"] = warnings
++    return out
++
++
+ def _gcode_header(settings: ProcessSettings, stats: Dict[str, float]) -> List[str]:
+     lines = [
+         f"(Generated by EBAM G-code Studio {APP_VERSION})",
+@@ -4665,6 +4899,20 @@
+     elif is_bormash_profile(settings):
+         warnings.extend([m for m in bormash_msgs if m.startswith("OK:")])
+ 
++    # --- Fusion power floor (advisory), ported from parallel branch ---
++    pf = beam_power_floor_analysis(settings, layers)
++    stats.update(pf)
++    if pf.get("beam_power_below_floor"):
++        warnings.insert(0, (
++            f"LOW BEAM POWER: weakest layer runs {pf['beam_power_current_now_ma']:.2f} mA -> "
++            f"{pf['beam_power_min_w']:.0f} W, below the fusion floor {pf['min_beam_power_w_floor']:.0f} W. "
++            f"Risk of lack-of-fusion / balling (real case: 160 J/mm + slow C = ~630 W balled). "
++            f"To reach the floor at current speed raise target energy to ~{pf['beam_power_energy_needed_j_mm']:.0f} J/mm "
++            f"(now ~{pf['beam_power_energy_now_j_mm']:.0f}), i.e. ~{pf['beam_power_current_needed_ma']:.1f} mA; "
++            f"or raise travel speed to ~{pf['beam_power_speed_for_floor_mm_s']:.2f} mm/s. "
++            f"G-code is NOT changed. Calibrate the floor on a single-bead TEST."
++        ))
++
+     if stats.get("gcode_lines", 0) > settings.max_gcode_lines_warning:
+         lines.append(f"  WARNING_LARGE_GCODE_LINES: {stats.get('gcode_lines')} lines; LinuxCNC preview/loading can be slow")
+     if stats.get("gcode_size_mb", 0.0) > settings.max_gcode_size_mb_warning:
+@@ -4730,6 +4978,16 @@
+         lines.append("Energy target/actual note:")
+         lines.append("  layers.csv separates energy_target_j_mm and energy_actual_j_mm. Actual energy is calculated after current clipping.")
+     lines.append("")
++    lines.append("Beam power (fusion) check:")
++    lines.append(f"  beam power range: {stats.get('beam_power_min_w', 0.0):.0f}..{stats.get('beam_power_max_w', 0.0):.0f} W  (P = U*I, U={settings.voltage_kv:.1f} kV)")
++    lines.append(f"  advisory fusion floor: {stats.get('min_beam_power_w_floor', 0.0):.0f} W (calibrate per machine/material on a single-bead TEST)")
++    if stats.get("beam_power_below_floor"):
++        lines.append(f"  RESULT: BELOW FLOOR at weakest layer ({stats.get('beam_power_current_now_ma', 0.0):.2f} mA = {stats.get('beam_power_min_w', 0.0):.0f} W).")
++        lines.append(f"    -> lack-of-fusion / balling risk. Raise target energy to ~{stats.get('beam_power_energy_needed_j_mm', 0.0):.0f} J/mm (~{stats.get('beam_power_current_needed_ma', 0.0):.1f} mA)")
++        lines.append(f"       or raise travel speed to ~{stats.get('beam_power_speed_for_floor_mm_s', 0.0):.2f} mm/s. G-code is NOT auto-changed.")
++    else:
++        lines.append("  RESULT: OK (all layers at or above the advisory fusion floor).")
++    lines.append("")
+     lines.append("Important engineering notes:")
+     lines.append("  1. This generator uses calculated start regimes, not real closed-loop thermal control.")
+     lines.append("  2. Always run dry simulation and a short Z10-15 mm test before full build.")

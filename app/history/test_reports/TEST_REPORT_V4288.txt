@@ -1,0 +1,34 @@
+EBAM G-Code Studio v4.2.9.6 REAL C RADIUS LIMIT - TEST REPORT
+
+Base: v4.2.8.7 STL PATH RECOMMENDER.
+Request: translate visible English technical labels where possible, especially hatch and link, without breaking G-code/internal compatibility.
+
+Changed visible UI/documentation wording:
+- preview -> предпросмотр
+- hatch in plot/caption -> рабочие дорожки
+- link in plot/caption -> перемычки
+- contour in plot/caption -> контуры
+- continuous/segmented in captions/help -> непрерывно/посегментно
+- fallback in visible labels -> резерв / резервный режим
+- C-feed -> скорость C
+- audit in visible operator text -> аудит
+- rotational_path_strategy shown in preview -> Russian strategy names
+- reverse G-code dataframe columns line/type/length/F -> строка/тип/длина/F
+
+Kept intentionally:
+- G-code remains G-code.
+- TEST remains TEST because it is already used as a practical short-run label.
+- JSON/internal setting keys such as hatch_spacing, deposition_strategy, direction remain in files/settings where changing them would break compatibility.
+- Python identifiers and G-code marker names remain stable.
+
+Verification:
+- Windows py_compile app/core/cli/launcher: PASS
+- Linux py_compile app/core/cli/launcher: PASS
+- Standard geometry G-code generation: PASS
+- Rotational vessel G-code generation: PASS
+- CLI generation: PASS
+- Source checks for translated preview labels: PASS
+- Source checks that visible hatch/link/C-feed captions were removed: PASS
+
+Automated test result:
+TOTAL 24/24 PASS

@@ -1,0 +1,69 @@
+EBAM G-Code Studio v4.2.9.6 REAL C RADIUS LIMIT - TEST REPORT
+
+Base: v4.2.9.0 FULL PATH SET.
+Reason: User found that changing trajectory strategy did not visibly change estimated build time. User also asked whether an E0 beam-current setpoint should be added so recalculation can be driven by current, not only by J/mm energy and wire feed.
+
+Fixed / added:
+1. Strategy-aware time estimate before generation.
+   - Old behaviour: pre-generation time mostly used volume / wire rate, so several trajectory choices looked identical.
+   - New behaviour: estimate still keeps active deposition physics, but adds strategy-dependent time:
+     * number of starts / passes;
+     * Z approach and lift time;
+     * W retract time;
+     * beam preheat / wire settle / beam-off pause;
+     * continuous-link overhead;
+     * rotary C small-radius speed limiting estimate.
+   - The UI table now shows:
+     * approximate strategy starts/passes;
+     * approximate links/transition moves;
+     * active deposition time;
+     * additional strategy time;
+     * total time.
+
+2. Generated-result timing for special strategies now includes strategy overhead.
+   - C-table rings: time includes one start/Z/W/restrike block per C360 ring.
+   - XY rings: time includes one continuous pass per layer plus link/servo overhead for the many arc segments.
+   - XY spiral: time includes one continuous pass per layer with minimal link overhead.
+   - Normal hatch/parallel timing remains compatible with previous logic.
+
+3. E0 beam-current setpoint mode.
+   - Added ProcessSettings fields:
+     * beam_current_mode = energy/current;
+     * beam_current_bottom_ma;
+     * beam_current_top_ma.
+   - Normal mode remains default: operator sets J/mm, program calculates E0 current.
+   - New current mode: operator sets E0 current, program calculates actual J/mm from U, I and F.
+   - Added simple-mode expander: "Уставка тока E0, если нужно вручную".
+   - Added advanced-mode checkbox: "Задавать ток E0 напрямую вместо энергии Дж/мм".
+   - UI calculation table now shows whether E0 is calculated by energy or by current setpoint.
+
+4. Target-time fitting updated for current-setpoint mode.
+   - In current mode, increasing F is no longer blocked by the old J/mm current cap; actual J/mm decreases and is displayed.
+   - In energy mode, previous current-limit behaviour remains.
+
+Verification:
+- Windows py_compile app/core/cli/launcher: PASS
+- Linux py_compile app/core/cli/launcher: PASS
+- Windows functional strategy/current tests: 13/13 PASS
+- Linux functional strategy/current tests: 13/13 PASS
+- CLI generation: PASS
+
+Functional result for the same rectangle geometry, same layer/spacing, different strategies:
+- snake:     353.42 s
+- parallel:  381.74 s
+- xy_rings: 1159.48 s
+- xy_spiral: 612.82 s
+- c_table:   802.50 s
+
+Checks:
+PASS strategy_times_not_all_equal
+PASS c_table_has_c360
+PASS rings_marker
+PASS spiral_marker
+PASS current_setpoint_current
+PASS current_setpoint_energy_actual
+PASS energy_mode_current_calc
+PASS cli_ok
+
+Important interpretation:
+Active deposition time can be similar between strategies because the same metal volume is deposited at a similar metal flow rate. Total time should differ because starts, links, C-table passes, arc segmentation, Z-hop and W-retract differ. v4.2.9.6 now makes that visible.

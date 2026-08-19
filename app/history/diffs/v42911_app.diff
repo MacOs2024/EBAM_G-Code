@@ -1,0 +1,367 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/app.py	2026-07-10 09:41:39.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_10_WINDOWS_INDUSTRIAL_CONTROL_QA/app.py	2026-07-10 11:43:18.049952702 +0000
+@@ -500,7 +500,7 @@
+ def _wire_for_feed(settings: ProcessSettings, feed_mm_min: float, ratio: float = 0.0) -> float:
+     """Wire feed E2 from the same rule used by core.layer_parameters().
+ 
+-    v4.2.9.10 supports operator wire mode:
++    v4.2.9.11 supports operator wire mode:
+     - auto: recalculate E2 from F, Z-step and hatch/radial step;
+     - manual_constant: use one fixed E2;
+     - manual_bottom_top: interpolate E2 over height.
+@@ -524,6 +524,104 @@
+     return max(0.0, float(settings.layer_height) * (float(feed_mm_min) / 60.0) * float(settings.hatch_spacing) / area)
+ 
+ 
++def _build_calc_rows(settings: ProcessSettings, n_layers: int, area_wire: float,
++                     recalc: dict, cinfo: dict | None, eta: dict,
++                     fmt_hm, radial_step_fn) -> list:
++    """Contextual summary rows: only parameters that are actually in effect for
++    the current source/strategy/mode are shown. C-axis rows appear only when a
++    C-limit context exists; the C+Z transition row only in no-pause mode; limiter
++    and clipping rows only when they actually changed something; contour /
++    strategy-overhead / target-vs-actual rows only when non-trivial. This removes
++    the confusing dashes-for-unused-modes from the old always-33-rows table."""
++    rows: list = []
++    add = lambda k, v: rows.append((k, str(v)))
++
++    strategy = str(getattr(settings, "rotational_path_strategy", "hatch")).lower()
++    is_rot_step = ("rotary" in strategy) or strategy in ("rings", "spiral")
++    no_pause = str(getattr(settings, "rotary_c_motion_mode", "separate_rings")).lower() == "no_pause_flat_rings"
++    step_mm = float(radial_step_fn(settings)) if is_rot_step else float(settings.hatch_spacing)
++
++    cb_need = float(recalc["effective_current_bottom_need"]); ct_need = float(recalc["effective_current_top_need"])
++    cb = float(recalc["effective_current_bottom"]); ct = float(recalc["effective_current_top"])
++    wb = float(recalc["effective_wire_bottom"]); wt = float(recalc["effective_wire_top"])
++    aj_b = float(recalc["effective_actual_energy_bottom"]); aj_t = float(recalc["effective_actual_energy_top"])
++    tj_b = float(recalc["effective_energy_bottom"]); tj_t = float(recalc["effective_energy_top"])
++    denom = max(settings.layer_height * step_mm, 1e-9)
++
++    add("Слоёв", n_layers)
++
++    limiter = str(recalc.get("limiter_reason") or "нет")
++    feeds_changed = (abs(float(recalc["requested_feed_bottom"]) - float(recalc["effective_feed_bottom"])) > 1e-6 or
++                     abs(float(recalc["requested_feed_top"]) - float(recalc["effective_feed_top"])) > 1e-6)
++    if limiter != "нет" or feeds_changed:
++        add("Ограничитель F", limiter)
++        add("F заданная низ/верх, мм/мин", f"{recalc['requested_feed_bottom']:.1f} / {recalc['requested_feed_top']:.1f}")
++        add("F фактическая низ/верх, мм/мин", f"{recalc['effective_feed_bottom']:.1f} / {recalc['effective_feed_top']:.1f}")
++    else:
++        add("Скорость низ/верх, мм/мин", f"{recalc['effective_feed_bottom']:.1f} / {recalc['effective_feed_top']:.1f}")
++
++    if cinfo:
++        add("C требуется низ/верх, град/мин", f"{cinfo.get('required_c_bottom', 0.0):.1f} / {cinfo.get('required_c_top', 0.0):.1f}")
++        add("C разрешено, град/мин", f"{cinfo.get('cmax_deg_min', 0.0):.1f}")
++        add("Радиус для C-лимита, мм", f"{cinfo.get('radius_mm', 0.0):.2f} ({cinfo.get('radius_source', '—')})")
++        if cinfo.get("real_radius_mm") is not None:
++            add("Реальный Rmin траектории, мм", f"{cinfo.get('real_radius_mm'):.2f}")
++        if cinfo.get("radius_below_warning"):
++            add("Порог предупреждения малого радиуса, мм", f"{cinfo.get('warning_radius_mm', 0.0):.2f}")
++        add("Режим C-колец", "C без остановки, фиксированные Z-кольца" if no_pause else "обычные отдельные кольца/траектория")
++        if no_pause:
++            add("Переход C+Z, град", f"{float(getattr(settings, 'rotary_c_transition_angle_deg', 0.0)):.1f}")
++
++    wire_mode = str(getattr(settings, "wire_feed_mode", "auto"))
++    add("Режим подачи E2", {"auto": "авто по F/Z/шагу", "manual_constant": "ручная постоянная",
++                            "manual_bottom_top": "ручная низ/верх"}.get(wire_mode, wire_mode))
++    add("Режим расчёта E0", "уставка тока E0" if str(getattr(settings, "beam_current_mode", "energy")).lower() != "energy" else "энергия Дж/мм")
++
++    if abs(float(recalc["requested_current_bottom_need"]) - cb_need) > 1e-3 or abs(float(recalc["requested_current_top_need"]) - ct_need) > 1e-3:
++        add("Ток до ограничителя низ/верх, мА", f"{recalc['requested_current_bottom_need']:.3f} / {recalc['requested_current_top_need']:.3f}")
++    clipped = (abs(cb - cb_need) > 1e-3) or (abs(ct - ct_need) > 1e-3)
++    if clipped:
++        add("Ток требуемый низ/верх, мА", f"{cb_need:.3f} / {ct_need:.3f}")
++        add("Лимиты E0 (нижний/верхний), мА", f"{settings.current_min_ma:.3f} / {settings.current_max_ma:.3f}")
++    add("Ток в G-code низ/верх, мА", f"{cb:.3f} / {ct:.3f}")
++    if settings.current_low_warning_ma > 0 and min(cb, ct) < settings.current_low_warning_ma:
++        add("Порог предупреждения малого E0, мА", round(settings.current_low_warning_ma, 3))
++
++    if abs(tj_b - aj_b) > 0.05 or abs(tj_t - aj_t) > 0.05:
++        add("Энергия цель низ/верх, Дж/мм", f"{tj_b:.1f} / {tj_t:.1f}")
++    add("Энергия факт низ/верх, Дж/мм", f"{aj_b:.1f} / {aj_t:.1f}")
++    add("Шаг заполнения, мм", f"{step_mm:.3f} ({'радиальный (кольца/спираль)' if is_rot_step else 'hatch'})")
++    add("Энергия объёма факт низ/верх, Дж/мм³", f"{aj_b / denom:.1f} / {aj_t / denom:.1f}")
++
++    floor_w = float(getattr(settings, "min_beam_power_w", 0.0) or 0.0)
++    if bool(getattr(settings, "power_floor_warning_enabled", True)) and floor_w > 0:
++        p_min = settings.voltage_kv * min(cb, ct); p_max = settings.voltage_kv * max(cb, ct)
++        mark = " ⚠ НИЖЕ ПОРОГА" if p_min < floor_w - 1e-9 else " — ок"
++        add("Мощность пучка низ/верх, Вт", f"{settings.voltage_kv * cb:.0f} / {settings.voltage_kv * ct:.0f} (порог {floor_w:.0f}{mark})")
++
++    if abs(float(recalc["requested_wire_bottom"]) - wb) > 1e-3 or abs(float(recalc["requested_wire_top"]) - wt) > 1e-3:
++        add("Проволока до ограничителя низ/верх, мм/с", f"{recalc['requested_wire_bottom']:.3f} / {recalc['requested_wire_top']:.3f}")
++    add("Проволока факт низ/верх, мм/с", f"{wb:.3f} / {wt:.3f}")
++    if max(wb, wt) > 0.85 * settings.wire_max_mm_s:
++        add("Контроль подачи, мм/с", f"{settings.wire_min_mm_s:.1f}...{settings.wire_max_mm_s:.1f}")
++    add("Площадь проволоки, мм²", round(area_wire, 3))
++
++    if int(settings.contour_passes) > 0:
++        add("Контурных проходов", settings.contour_passes)
++    passes = float(eta.get("strategy_passes", eta.get("est_segments", 0.0)) or 0.0)
++    links = float(eta.get("strategy_link_moves", 0.0) or 0.0)
++    if passes > 0:
++        add("Стартов/проходов стратегии, прибл.", round(passes, 1))
++    if links > 0:
++        add("Перемычек/сегментных переходов, прибл.", round(links, 1))
++
++    add("Время активной наплавки, прибл.", fmt_hm(eta["active_s"]))
++    if float(eta.get("aux_s", 0.0) or 0.0) > 0.5:
++        add("Доп. время стратегии, прибл.", fmt_hm(eta.get("aux_s", 0.0)))
++    add("Полное время с паузами, прибл.", fmt_hm(eta["total_s"]))
++    return rows
++
++
+ def _process_recalc_snapshot(settings: ProcessSettings, c_limit_info: dict | None = None) -> dict:
+     """One visible recalculation chain for the UI.
+ 
+@@ -583,7 +681,7 @@
+ def _rotary_c_radius_limit_info(summary: dict, settings: ProcessSettings) -> dict:
+     """Choose the radius used for the UI-level C feed limiter.
+ 
+-    v4.2.9.10 separates two meanings that were previously mixed:
++    v4.2.9.11 separates two meanings that were previously mixed:
+     - rotary_c_min_radius_mm is only a warning threshold for small radii;
+     - the C limiter uses the real/estimated minimum toolpath radius when geometry is known.
+ 
+@@ -728,7 +826,7 @@
+ def _apply_rotary_c_feed_limit_to_settings(summary: dict, settings: ProcessSettings):
+     """Apply C-axis speed cap to visible/global F when rotary C auto-limit is enabled.
+ 
+-    v4.2.9.10 applies the C limit before the calculation table and before G-code generation.
++    v4.2.9.11 applies the C limit before the calculation table and before G-code generation.
+     Therefore every downstream value is recalculated from effective F: E0, E2,
+     J/mm, J/mm3, time estimate and warnings. The generator still keeps per-ring
+     protection as a second safety layer.
+@@ -1191,7 +1289,7 @@
+             rotary_c_min_radius_mm = st.number_input(
+                 "Предупреждать радиус ниже, мм (не ограничивает F при известной геометрии)",
+                 min_value=0.1, max_value=500.0, value=18.0, step=1.0,
+-                help="Порог предупреждения для малых C-радиусов. В v4.2.9.10 он не режет F, если программа знает реальные радиусы колец; C-лимит считает по реальному Rmin траектории. Для STL/неизвестной геометрии может использоваться как осторожный fallback.",
++                help="Порог предупреждения для малых C-радиусов. В v4.2.9.11 он не режет F, если программа знает реальные радиусы колец; C-лимит считает по реальному Rmin траектории. Для STL/неизвестной геометрии может использоваться как осторожный fallback.",
+                 key=f"{key_prefix}_rmin",
+             )
+         rotary_c_auto_limit_feed = st.checkbox("Автоограничивать F по лимиту C", value=True, key=f"{key_prefix}_autof")
+@@ -1546,6 +1644,15 @@
+             min_value=0.0, max_value=1000.0, value=float(recommended.current_low_warning_ma), step=0.5, format="%.3f",
+             help="Только предупреждение для оператора. Этот порог не меняет G-code и не поднимает ток."
+         )
++        min_beam_power_w = st.number_input(
++            "Порог мощности проплава, Вт (0 = выкл)",
++            min_value=0.0, max_value=50000.0, value=float(getattr(recommended, "min_beam_power_w", 900.0)), step=50.0, format="%.0f",
++            help="Совещательный порог по реальному опыту: Дж/мм НЕ гарантируют проплав — при низкой скорости даже 'правильная' энергия даёт малую мощность P=U·I и непроплав/шарики (реальный случай: 160 Дж/мм + медленное C ≈ 630 Вт). G-code не меняется, ток не поднимается. Калибруется одиночным валиком."
++        )
++        power_floor_warning_enabled = st.checkbox(
++            "Включить проверку порога мощности", value=bool(getattr(recommended, "power_floor_warning_enabled", True)),
++            help="Если выключить — предупреждение о малой мощности проплава не показывается."
++        )
+         if current_min > current_max:
+             st.error("Нижний лимит тока выше верхнего. Уменьшите нижний лимит или увеличьте верхний.")
+             current_min = current_max
+@@ -1795,6 +1902,8 @@
+         current_min_ma=current_min,
+         current_low_warning_ma=current_low_warning,
+         current_max_ma=current_max,
++        min_beam_power_w=float(min_beam_power_w),
++        power_floor_warning_enabled=bool(power_floor_warning_enabled),
+         beam_current_mode=beam_current_mode,
+         beam_current_bottom_ma=float(beam_current_bottom_ma),
+         beam_current_top_ma=float(beam_current_top_ma),
+@@ -2369,11 +2478,123 @@
+     st.header("1. Задача")
+     app_task = st.radio(
+         "Что нужно сделать?",
+-        ["Создать G-code", "Анализ готового G-code"],
++        ["Создать G-code", "Анализ готового G-code", "Калибровка валиков (TEST)"],
+         index=0,
+-        help="Во втором режиме STL/DXF/CSV не нужен: можно сразу загрузить .ngc и проверить траекторию.",
++        help="Анализ: проверить готовый .ngc без геометрии. Калибровка: матрица одиночных валиков — по измерениям считается порог проплава, Z-шаг и шаг дорожек вашей машины.",
+     )
+ 
++if app_task == "Калибровка валиков (TEST)":
++    from ebam_gcode_studio.core import generate_calibration_beads, analyze_calibration_results
++    st.info("Калибровочная матрица одиночных валиков: строки = токи E0, столбцы = скорости F. "
++            "Наплавьте на запасной пластине, измерьте каждый валик (ширина, высота, проплав к плите) "
++            "и введите результаты — приложение рассчитает порог мощности проплава, Z-шаг, шаг дорожек и η вашей машины.")
++    st.warning("Часть валиков НАМЕРЕННО слабая (для поиска нижней границы). Только запасная пластина. "
++               "Перед лучом: viewer → сухой прогон → проверка W. Overrides держать 100% для воспроизводимости (приложение их не трогает).")
++    cal_col1, cal_col2 = st.columns(2)
++    with cal_col1:
++        cal_voltage = st.number_input("Ускоряющее напряжение, кВ", min_value=1.0, max_value=300.0, value=60.0, step=1.0)
++        cal_wire_d = st.number_input("Диаметр проволоки, мм", min_value=0.1, max_value=5.0, value=1.2, step=0.1)
++        cal_currents_txt = st.text_input("Токи E0, мА (через запятую)", value="8, 12, 16, 20, 24",
++                                         help="Строки матрицы. Диапазон вокруг ожидаемого порога: часть не проплавится, часть — проплавится.")
++        cal_feeds_txt = st.text_input("Скорости F, мм/мин (через запятую)", value="180, 235, 300",
++                                      help="Столбцы матрицы.")
++        cal_wire_mode = st.selectbox("Подача проволоки E2", ["Авто из объёма (как в генераторе)", "Фиксированная"], index=0)
++        cal_wire_fixed = st.number_input("Фиксированная E2, мм/с", min_value=0.1, max_value=60.0, value=3.5, step=0.1,
++                                         disabled=not cal_wire_mode.startswith("Фикс"))
++    with cal_col2:
++        cal_len = st.number_input("Длина валика, мм", min_value=5.0, max_value=300.0, value=40.0, step=5.0)
++        cal_spacing = st.number_input("Шаг между валиками по Y, мм", min_value=3.0, max_value=100.0, value=10.0, step=1.0,
++                                      help="Расстояние между строками (токами); заметно больше ожидаемой ширины валика.")
++        cal_gap = st.number_input("Зазор между столбцами по X, мм", min_value=3.0, max_value=100.0, value=12.0, step=1.0)
++        cal_ox = st.number_input("Начало X, мм", min_value=0.0, max_value=3000.0, value=15.0, step=5.0)
++        cal_oy = st.number_input("Начало Y, мм", min_value=0.0, max_value=1400.0, value=15.0, step=5.0)
++    try:
++        cal_currents = [float(x.replace(",", ".")) for x in cal_currents_txt.replace(";", ",").split(",") if x.strip()]
++        cal_feeds = [float(x.replace(",", ".")) for x in cal_feeds_txt.replace(";", ",").split(",") if x.strip()]
++    except ValueError:
++        cal_currents, cal_feeds = [], []
++        st.error("Токи/скорости: не удалось разобрать список чисел. Пример: 8, 12, 16, 20, 24")
++    if cal_currents and cal_feeds:
++        st.caption(f"Матрица: {len(cal_currents)} токов × {len(cal_feeds)} скоростей = {len(cal_currents)*len(cal_feeds)} валиков. "
++                   f"Мощность от {cal_voltage*min(cal_currents):.0f} до {cal_voltage*max(cal_currents):.0f} Вт.")
++    if st.button("Сгенерировать G-code матрицы", type="primary", disabled=not (cal_currents and cal_feeds)):
++        try:
++            cal_settings = ProcessSettings(voltage_kv=float(cal_voltage), wire_diameter_mm=float(cal_wire_d),
++                                           current_max_ma=max(max(cal_currents) + 1.0, 50.0), include_comments=True)
++            cal_res = generate_calibration_beads(
++                cal_settings, currents_ma=cal_currents, feeds_mm_min=cal_feeds,
++                bead_length_mm=float(cal_len), bead_spacing_mm=float(cal_spacing), col_gap_mm=float(cal_gap),
++                origin_x_mm=float(cal_ox), origin_y_mm=float(cal_oy),
++                wire_mode=("fixed" if cal_wire_mode.startswith("Фикс") else "auto"),
++                wire_fixed_mm_s=float(cal_wire_fixed))
++            st.session_state["cal_result"] = cal_res
++            st.session_state["cal_meta"] = {"voltage": float(cal_voltage), "wire_d": float(cal_wire_d)}
++        except Exception as exc:
++            st.error(f"Не удалось сгенерировать матрицу: {exc}")
++    if "cal_result" in st.session_state:
++        cal_res = st.session_state["cal_result"]
++        st.success(f"Матрица готова: {cal_res.stats['beads_total']} валиков, {cal_res.stats['gcode_lines']} строк G-code. "
++                   f"Bormash-лимиты: {'OK' if cal_res.stats.get('bormash_limits_ok') else 'ПРЕВЫШЕНЫ'}.")
++        import io as _io, zipfile as _zf
++        _buf = _io.BytesIO()
++        with _zf.ZipFile(_buf, "w", _zf.ZIP_DEFLATED) as zf:
++            zf.writestr("calibration_beads.ngc", cal_res.gcode)
++            zf.writestr("calibration_bead_map.csv", cal_res.layer_csv)
++            zf.writestr("calibration_audit.txt", cal_res.audit_text)
++        st.download_button("Скачать комплект калибровки (ZIP)", data=_buf.getvalue(),
++                           file_name="ebam_calibration_beads.zip", mime="application/zip")
++        st.markdown("---")
++        st.subheader("Результаты измерений")
++        st.caption("Измерьте каждый валик: ширина (мм), высота (мм), проплав к плите (да/нет). "
++                   "Непроплав = шарики/комки или валик отделяется от плиты.")
++        map_lines = cal_res.layer_csv.strip().splitlines()
++        cols = map_lines[0].split(",")
++        base_rows = [dict(zip(cols, ln.split(","))) for ln in map_lines[1:]]
++        df0 = pd.DataFrame([{
++            "bead_id": int(r["bead_id"]), "current_ma": float(r["current_ma"]),
++            "feed_mm_min": float(r["feed_mm_min"]), "wire_mm_s": float(r["wire_mm_s"]),
++            "power_w": float(r["power_w"]), "width_mm": 0.0, "height_mm": 0.0, "fused": False,
++        } for r in base_rows])
++        edited = st.data_editor(df0, num_rows="fixed", hide_index=True, key="cal_editor",
++                                disabled=["bead_id", "current_ma", "feed_mm_min", "wire_mm_s", "power_w"])
++        if st.button("Рассчитать рекомендации по измерениям"):
++            meta = st.session_state.get("cal_meta", {"voltage": 60.0, "wire_d": 1.2})
++            rows = edited.to_dict("records")
++            used = [r for r in rows if r.get("fused") or float(r.get("width_mm") or 0) > 0 or float(r.get("height_mm") or 0) > 0]
++            if not used:
++                st.error("Не заполнено ни одного валика: отметьте проплав и/или введите размеры хотя бы для части валиков.")
++            else:
++                ana = analyze_calibration_results(rows, voltage_kv=meta["voltage"], wire_diameter_mm=meta["wire_d"])
++                if ana.get("error"):
++                    st.error(ana["error"])
++                else:
++                    m1, m2, m3 = st.columns(3)
++                    if ana.get("recommended_min_beam_power_w"):
++                        m1.metric("Порог мощности проплава", f"{ana['recommended_min_beam_power_w']:.0f} Вт",
++                                  help="Вставьте в 'Порог мощности проплава' в расширенном режиме создания G-code.")
++                    if ana.get("recommended_z_step_mm"):
++                        m2.metric("Z-шаг (медианная высота валика)", f"{ana['recommended_z_step_mm']:.2f} мм")
++                    if ana.get("recommended_hatch_tom_mm"):
++                        m3.metric("Шаг дорожек TOM (0.738·w)", f"{ana['recommended_hatch_tom_mm']:.2f} мм",
++                                  help=f"FOM (0.667·w): {ana.get('recommended_hatch_fom_mm', 0):.2f} мм")
++                    m4, m5, m6 = st.columns(3)
++                    if ana.get("recommended_energy_j_mm"):
++                        m4.metric("Целевая энергия (медиана проплава)", f"{ana['recommended_energy_j_mm']:.0f} Дж/мм")
++                    if ana.get("deposition_efficiency_estimate"):
++                        m5.metric("η (оценка)", f"{ana['deposition_efficiency_estimate']:.2f}",
++                                  help="Коэффициент осаждения из измеренных валиков; сверить с массовой калибровкой.")
++                    m6.metric("Валиков учтено", f"{ana['beads_used']} (проплав {ana.get('fused_count',0)} / нет {ana.get('unfused_count',0)})")
++                    if ana.get("power_unfused_max_w") and ana.get("power_fused_min_w"):
++                        st.info(f"Граница проплава по вашим данным: непроплав до {ana['power_unfused_max_w']:.0f} Вт, "
++                                f"проплав от {ana['power_fused_min_w']:.0f} Вт. Для уточнения добавьте валики между этими мощностями.")
++                    for w in ana.get("warnings", []):
++                        st.warning(w)
++                    st.caption("Рекомендации — стартовые значения для короткого TEST, не гарантированный режим. "
++                               "Перенесите порог/энергию/Z-шаг/шаг дорожек в 'Создать G-code' вручную.")
++    st.markdown("---")
++    st.caption("By Керенцев Максим")
++    st.stop()
++
+ if app_task == "Анализ готового G-code":
+     st.info("Анализатор G-code: геометрию загружать не нужно.")
+     render_gcode_reverse_analyzer(ProcessSettings(), key_prefix="standalone_reverse")
+@@ -2732,44 +2953,9 @@
+         evol_actual_bottom = actual_j_bottom / max(settings.layer_height * settings.hatch_spacing, 1e-9)
+         evol_actual_top = actual_j_top / max(settings.layer_height * settings.hatch_spacing, 1e-9)
+         eta = _estimate_time_before_generation(summary, settings)
+-        calc_df = pd.DataFrame({
+-            "Параметр": [
+-                "Слоёв", "Скорость низ/верх, мм/мин", "Ограничитель F", "F заданная низ/верх, мм/мин", "F фактическая низ/верх, мм/мин", "C требуется низ/верх, град/мин", "C разрешено, град/мин", "Радиус, использованный для C-лимита, мм", "Реальный Rmin траектории, мм", "Порог предупреждения малого радиуса, мм", "Источник радиуса для C-лимита", "Режим C-колец", "Переход C+Z, град", "Режим подачи E2", "Режим расчёта E0", "Ток до ограничителя низ/верх, мА", "Ток после ограничителя низ/верх, мА", "Ток в G-code низ/верх, мА", "Нижний/верхний лимит E0, мА",
+-                "Порог предупреждения малого E0, мА", "Энергия расчётная низ/верх, Дж/мм", "Энергия факт низ/верх, Дж/мм",
+-                "Энергия объёма цель/факт, Дж/мм³",
+-                "Проволока до ограничителя низ/верх, мм/с", "Проволока факт низ/верх, мм/с", "Контроль подачи, мм/с",
+-                "Площадь проволоки, мм²", "Контурных проходов",
+-                "Стартов/проходов стратегии, прибл.", "Перемычек/сегментных переходов, прибл.",
+-                "Время активной наплавки, прибл.", "Доп. время стратегии, прибл.", "Полное время с паузами, прибл."
+-            ],
+-            "Значение": [
+-                n_layers, f"{settings.feed_bottom_mm_min:.1f} / {settings.feed_top_mm_min:.1f}",
+-                recalc.get("limiter_reason", "нет"),
+-                f"{recalc['requested_feed_bottom']:.1f} / {recalc['requested_feed_top']:.1f}",
+-                f"{recalc['effective_feed_bottom']:.1f} / {recalc['effective_feed_top']:.1f}",
+-                (f"{(time_plan.get('c_limit_info', {}) or {}).get('required_c_bottom', 0.0):.1f} / {(time_plan.get('c_limit_info', {}) or {}).get('required_c_top', 0.0):.1f}" if time_plan.get("c_limit_info") else "—"),
+-                (f"{(time_plan.get('c_limit_info', {}) or {}).get('cmax_deg_min', 0.0):.1f}" if time_plan.get("c_limit_info") else "—"),
+-                (f"{(time_plan.get('c_limit_info', {}) or {}).get('radius_mm', 0.0):.2f}" if time_plan.get("c_limit_info") else "—"),
+-                (f"{(time_plan.get('c_limit_info', {}) or {}).get('real_radius_mm'):.2f}" if time_plan.get("c_limit_info") and (time_plan.get('c_limit_info', {}) or {}).get('real_radius_mm') is not None else "—"),
+-                (f"{(time_plan.get('c_limit_info', {}) or {}).get('warning_radius_mm', 0.0):.2f}" if time_plan.get("c_limit_info") else "—"),
+-                ((time_plan.get('c_limit_info', {}) or {}).get('radius_source', '—') if time_plan.get("c_limit_info") else "—"),
+-                ("C без остановки, фиксированные Z-кольца" if str(getattr(settings, "rotary_c_motion_mode", "separate_rings")).lower() == "no_pause_flat_rings" else "обычные отдельные кольца/траектория"),
+-                (f"{float(getattr(settings, 'rotary_c_transition_angle_deg', 0.0)):.1f}" if str(getattr(settings, "rotary_c_motion_mode", "separate_rings")).lower() == "no_pause_flat_rings" else "—"),
+-                ({"auto": "авто по F/Z/шагу", "manual_constant": "ручная постоянная", "manual_bottom_top": "ручная низ/верх"}.get(str(getattr(settings, "wire_feed_mode", "auto")), str(getattr(settings, "wire_feed_mode", "auto")))),
+-                ("уставка тока E0" if str(getattr(settings, "beam_current_mode", "energy")).lower() != "energy" else "энергия Дж/мм"),
+-                f"{recalc['requested_current_bottom_need']:.3f} / {recalc['requested_current_top_need']:.3f}",
+-                f"{recalc['effective_current_bottom_need']:.3f} / {recalc['effective_current_top_need']:.3f}",
+-                f"{current_bottom:.3f} / {current_top:.3f}", f"{settings.current_min_ma:.3f} / {settings.current_max_ma:.3f}", round(settings.current_low_warning_ma,3),
+-                f"{target_j_bottom:.1f} / {target_j_top:.1f}",
+-                f"{actual_j_bottom:.1f} / {actual_j_top:.1f}",
+-                f"цель {evol_target_bottom:.1f}/{evol_target_top:.1f}; факт {evol_actual_bottom:.1f}/{evol_actual_top:.1f}",
+-                f"{recalc['requested_wire_bottom']:.3f} / {recalc['requested_wire_top']:.3f}",
+-                f"{wire_bottom:.3f} / {wire_top:.3f}", f"{settings.wire_min_mm_s:.1f}...{settings.wire_max_mm_s:.1f}",
+-                round(area_wire,3), settings.contour_passes,
+-                round(float(eta.get("strategy_passes", eta.get("est_segments", 0.0))), 1), round(float(eta.get("strategy_link_moves", 0.0)), 1),
+-                _fmt_hm(eta["active_s"]), _fmt_hm(eta.get("aux_s", 0.0)), _fmt_hm(eta["total_s"])
+-            ]
+-        })
++        from ebam_gcode_studio.core import _effective_rotational_radial_step as _err_step
++        calc_rows = _build_calc_rows(settings, n_layers, area_wire, recalc, cinfo, eta, _fmt_hm, _err_step)
++        calc_df = pd.DataFrame(calc_rows, columns=["Параметр", "Значение"])
+         calc_df["Значение"] = calc_df["Значение"].map(str)
+         st.table(calc_df.set_index("Параметр"))
+         cinfo = time_plan.get("c_limit_info")
+@@ -3107,6 +3293,24 @@
+                 "G-code не меняется, но проверьте устойчивость реального источника на таком малом токе."
+             )
+ 
++        if result.stats.get("beam_power_below_floor"):
++            st.error(
++                f"⚠️ МАЛАЯ МОЩНОСТЬ ПРОПЛАВА. Слабейший слой: "
++                f"{result.stats.get('beam_power_current_now_ma', 0):.2f} мА → "
++                f"{result.stats.get('beam_power_min_w', 0):.0f} Вт при пороге "
++                f"{result.stats.get('min_beam_power_w_floor', 0):.0f} Вт. Риск непроплава/шариков "
++                f"(реальный случай: 160 Дж/мм + медленное C ≈ 630 Вт). Чтобы выйти на порог при текущей скорости, "
++                f"поднимите энергию до ~{result.stats.get('beam_power_energy_needed_j_mm', 0):.0f} Дж/мм "
++                f"(~{result.stats.get('beam_power_current_needed_ma', 0):.1f} мА) либо скорость до "
++                f"~{result.stats.get('beam_power_speed_for_floor_mm_s', 0):.2f} мм/с. G-code НЕ изменён; "
++                f"порог калибруется одиночным валиком (задача 'Калибровка валиков')."
++            )
++        elif result.stats.get("min_beam_power_w_floor", 0) > 0:
++            st.caption(
++                f"Мощность пучка: {result.stats.get('beam_power_min_w', 0):.0f}–{result.stats.get('beam_power_max_w', 0):.0f} Вт "
++                f"(порог проплава {result.stats.get('min_beam_power_w_floor', 0):.0f} Вт) — в норме."
++            )
++
+         suffix = "TEST" if test_mode else "FULL"
+         result_zip = _make_result_zip(result, settings_to_json(run_settings), suffix)
+         st.download_button(

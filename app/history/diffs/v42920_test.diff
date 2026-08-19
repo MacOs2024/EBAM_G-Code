@@ -1,0 +1,14 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_19_FLANGE_FAMILY/deep_interaction_test.py	2026-07-10 09:34:29.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_19_FLANGE_FAMILY/deep_interaction_test.py	2026-07-16 04:06:39.603179149 +0000
+@@ -256,7 +256,11 @@
+         if field in ("target_energy_bottom_j_per_mm", "target_energy_top_j_per_mm"): s = replace(s, beam_current_mode="energy")
+         if field in ("beam_current_bottom_ma", "beam_current_top_ma"): s = replace(s, beam_current_mode="current")
+         if field in ("bead_width_mm","overlap_model","auto_hatch_from_bead"):
++            # Auto-hatch needs a real bead width; radial_step=0 relies on it (v4.2.9.20
++            # rejects a zero effective rotary step that used to fall back silently).
+             s = replace(s, auto_hatch_from_bead=True, rotational_radial_step_mm=0.0)
++            if float(getattr(s, "bead_width_mm", 0.0) or 0.0) <= 0.0:
++                s = replace(s, bead_width_mm=3.0)
+         if field == "analog_output_mode" and v == "m67_synchronized":
+             s = replace(s, machine_m67_confirmed=True)
+         run_case(f"smoke {field}={v}", s)

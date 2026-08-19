@@ -1,0 +1,61 @@
+EBAM G-Code Studio v4.2.9.6 REAL C RADIUS LIMIT - TEST REPORT
+
+Base version:
+- v4.2.9.5 RING ORDER FIX, supplied by the user.
+
+Problem fixed:
+- The UI field "Предупреждать радиус ниже, мм" was named as a warning threshold but was also used as a candidate radius for the UI/global C-feed limiter.
+- With warning radius = 18 mm and real cylinder rings around R37-R39 mm, the application could limit F as if the part radius was 18 mm.
+- Example old cap: Cmax 750 deg/min at R18 -> F = 235.6 mm/min.
+
+Implemented in v4.2.9.6:
+1. Added _rotary_c_radius_limit_info() in app.py.
+2. Separated warning radius from C-limit radius:
+   - warning radius remains a warning threshold;
+   - the C limiter uses real/estimated toolpath Rmin when geometry is known.
+3. For parametric rotational vessels:
+   - shell wall Rmin = outer_min_radius - wall_thickness + radial_step/2;
+   - bottom solid Rmin = radial_step/2;
+   - fallback is only used when real radius is unknown.
+4. Added UI rows:
+   - Радиус, использованный для C-лимита, мм
+   - Реальный Rmin траектории, мм
+   - Порог предупреждения малого радиуса, мм
+   - Источник радиуса для C-лимита
+5. Added G-code comment for parametric rotary C paths:
+   - (ROTARY_C_REAL_RADIUS_LIMIT: real_Rmin=... warning_below=... source=real_toolpath_radius; warning radius does not clamp F)
+6. Core generator still checks every real C-ring and limits feed per ring if required.
+
+Numerical verification:
+Input summary:
+- source_type = rotational_vessel
+- min_outer_diameter = 80 mm
+- wall_thickness = 4 mm
+- radial_step = 2 mm
+- warning radius = 18 mm
+- C max = 750 deg/min
+- requested F = 700 / 790 mm/min
+
+Expected real first ring radius:
+- R = 40 - 4 + 1 = 37 mm
+
+Old-style warning-radius cap:
+- Fcap_old = 750 * pi * 18 / 180 = 235.6 mm/min
+
+New real-radius cap:
+- Fcap_new = 750 * pi * 37 / 180 = 484.3 mm/min
+
+Test results:
+- py_compile app/core/cli/launcher: PASS
+- uses real radius instead of warning radius: PASS
+- warning radius remains visible as warning only: PASS
+- rotational wall source = real_toolpath_radius_wall: PASS
+- F is limited by R37, not R18: PASS
+- unknown STL/generic geometry still uses warning fallback: PASS
+- bottom-solid geometry uses small real radius and warns: PASS
+- generated G-code contains ROTARY_C_REAL_RADIUS_LIMIT: PASS
+- core generator min radius used = 37 mm: PASS
+- core Cfeed <= C max: PASS
+- CLI generation: PASS
+
+Total automated checks: PASS.

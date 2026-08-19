@@ -1,0 +1,258 @@
+EBAM G-code Studio v4.2.9.6 audit
+============================
+
+Process settings:
+  layer_height: 2.0
+  hatch_spacing: 2.5
+  edge_offset: 0.8
+  min_segment_length: 4.0
+  center_xy: False
+  z_to_zero: True
+  axis_order: XYZ
+  rotate_x_deg: 0.0
+  rotate_y_deg: 0.0
+  rotate_z_deg: 0.0
+  mirror_x: False
+  mirror_y: False
+  mirror_z: False
+  output_offset_x_mm: 0.0
+  output_offset_y_mm: 0.0
+  output_offset_z_mm: 0.0
+  direction: Y-
+  alternate_hatch_shift: True
+  shift_fraction_a: 0.0
+  shift_fraction_b: 0.33
+  shift_fraction_c: -0.33
+  thermal_ordering: skip_neighbours
+  deposition_strategy: continuous
+  link_feed_factor: 1.3
+  bead_width_mm: 0.0
+  overlap_model: tom
+  auto_hatch_from_bead: False
+  rotational_path_strategy: rotary_c_rings
+  rotational_radial_step_mm: 2.5
+  rotational_points_per_circle: 160
+  rotary_c_center_x_mm: 100.0
+  rotary_c_center_y_mm: 50.0
+  rotary_c_direction: C+
+  rotary_c_start_deg: 0.0
+  rotary_c_b_angle_deg: 0.0
+  rotary_c_max_deg_min: 2100.0
+  rotary_c_min_radius_mm: 18.0
+  rotary_c_auto_limit_feed: True
+  rotary_c_relative_turns: True
+  alternate_layer_rotation: False
+  contour_passes: 0
+  contour_offset_step: 0.7
+  contour_wire_factor: 0.72
+  contour_feed_factor: 0.88
+  contour_every_n_layers: 1
+  contour_first: False
+  adaptive_thin_wall: True
+  force_contour_on_empty_layers: True
+  adaptive_section_probe: True
+  section_probe_fraction: 0.45
+  thin_wall_hatch_spacing_factor: 0.55
+  thin_wall_edge_offset_factor: 0.35
+  thin_wall_min_segment_length: 1.0
+  thin_wall_wire_factor: 0.65
+  adaptive_wire_correction: True
+  manual_section_fallback: True
+  projection_fallback_if_empty: False
+  minimum_generated_layer_fraction: 0.9
+  max_layers_to_generate: 3
+  progress_update_every_layers: 1
+  target_total_time_s: 0.0
+  target_time_mode: off
+  voltage_kv: 60.0
+  target_energy_bottom_j_per_mm: 158.0
+  target_energy_top_j_per_mm: 138.0
+  feed_bottom_mm_min: 650.0
+  feed_top_mm_min: 710.0
+  wire_diameter_mm: 1.2
+  deposition_efficiency: 1.0
+  density_g_cm3: 7.9
+  focus_ma: 1030.0
+  current_min_ma: 0.0
+  current_low_warning_ma: 1.0
+  current_max_ma: 50.0
+  wire_min_mm_s: 0.3
+  wire_max_mm_s: 40.0
+  z_hop_mm: 7.0
+  lead_in_beam_mm: 0.6
+  soft_start_mm: 2.0
+  soft_finish_mm: 1.8
+  tail_beam_mm: 0.8
+  soft_wire_factor: 0.82
+  edge_wire_factor_bottom: 0.94
+  edge_wire_factor_top: 0.87
+  near_edge_wire_factor_bottom: 0.97
+  near_edge_wire_factor_top: 0.93
+  use_w_retract: False
+  w_retract_mm: 0.8
+  w_retract_feed_mm_min: 720.0
+  use_m68_speed_retract: False
+  speed_retract_mm_s: 3.6
+  speed_retract_time_s: 0.22
+  beam_preheat_s: 0.03
+  wire_settle_s: 0.02
+  beam_off_pause_s: 0.03
+  layer_pause_bottom_s: 0.1
+  layer_pause_top_s: 0.45
+  g64_tolerance_mm: 0.08
+  safe_z_final_mm: 110.0
+  rapid_feed_z_mm_min: 900.0
+  work_z_feed_mm_min: 240.0
+  units: mm
+  machine_name: Bormash EBAM
+  bormash_profile_enabled: True
+  bormash_check_xyz_limits: True
+  bormash_x_min_mm: 0.0
+  bormash_x_max_mm: 3670.0
+  bormash_y_min_mm: 0.0
+  bormash_y_max_mm: 1510.0
+  bormash_z_min_mm: 0.0
+  bormash_z_max_mm: 1443.0
+  include_comments: True
+  max_gcode_lines_warning: 500000
+  max_gcode_size_mb_warning: 20.0
+
+Model / generation stats:
+  active_path_length_m: 3.505507571193455
+  active_path_length_mm: 3505.507571193455
+  app_version: v4.2.9.6
+  bormash_profile_enabled: True
+  bottom_solid_mm: 5.0
+  contour_path_length_mm: 0.0
+  contour_segments_total: 0
+  current_below_low_warning: False
+  current_clipped_by_limit: False
+  current_clipped_by_max: False
+  current_clipped_by_min: False
+  current_limit_ma: 50.0
+  current_low_warning_ma: 1.0
+  current_min_ma: 0.0
+  current_required_max_ma: 28.52777777777778
+  current_required_min_ma: 1.4986315736007407
+  deposition_strategy: rotary_c_table_rings
+  energy_actual_max_j_mm: 158.00000000000003
+  energy_actual_min_j_mm: 153.99999999999997
+  energy_target_max_j_mm: 158.0
+  energy_target_min_j_mm: 154.0
+  energy_volume_max_j_mm3: 31.600000000000012
+  energy_volume_min_j_mm3: 30.799999999999994
+  estimated_active_time_h: 0.11748587745322153
+  estimated_active_time_s: 422.9491588315975
+  estimated_service_time_s: 7.734999999999999
+  estimated_total_time_h: 0.11963448856433265
+  estimated_total_time_s: 430.68415883159753
+  estimated_wire_length_mm: 15497.746055597292
+  feed_max_mm_min: 662.0
+  feed_min_mm_min: 34.146035854194096
+  gcode_lines: 625
+  gcode_size_mb: 0.012158393859863281
+  hatch_spacing_effective_mm: 2.5
+  height_mm: 20.0
+  is_test_truncated: True
+  is_watertight: True
+  layers_full_model: 10
+  layers_requested: 3
+  layers_total: 3
+  max_outer_diameter_mm: 120.0
+  max_segments_per_layer: 15
+  max_x: 137.28024042073628
+  max_y: 50.0
+  max_z: 20.0
+  min_outer_diameter_mm: 40.0
+  min_x: 100.93163035311795
+  min_y: 50.0
+  min_z: 0.0
+  passes_total: 35
+  process_wire_warning_limit_mm_s: 40.0
+  profile_type: sphere_balloon
+  recommended_process: ring/spiral preferred; this version approximates by per-layer hatch/continuous path through annular STL-like sections
+  rings_total: 35
+  rotary_c_b_angle_deg: 0.0
+  rotary_c_center_x_mm: 100.0
+  rotary_c_center_y_mm: 50.0
+  rotary_c_direction: C+
+  rotary_c_feed_limited_count: 21
+  rotary_c_max_deg_min: 2100.0
+  rotary_c_max_radius_used_mm: 37.280240420736284
+  rotary_c_min_radius_mm: 18.0
+  rotary_c_min_radius_used_mm: 0.9316303531179564
+  rotary_c_mode: B_fixed_C_axis_rings
+  rotary_c_required_max_deg_min: 39975.357778825135
+  rotary_c_small_radius_count: 21
+  rotary_c_start_deg: 0.0
+  rotary_c_used_max_deg_min: 2100.0
+  rotational_path_strategy: rotary_c_rings
+  rotational_radial_step_mm: 2.5
+  segments_total: 35
+  size_x: 124.0
+  size_y: 124.0
+  size_z: 20.0
+  source_type: rotational_vessel
+  wall_thickness_mm: 5.0
+  wire_above_control_limit: True
+  wire_max_calculated_mm_s: 48.778042743904955
+  wire_min_calculated_mm_s: 2.5159770338833702
+
+Static G-code audit:
+  OK: True
+  g0_active: 0
+  active_x_transition: 0
+  active_xy_lines: 0
+  active_c_motion: 35
+  g0_active_c: 0
+  m0_count: 0
+  cycle_count: 0
+  max_current_ma: 28.528
+  max_wire_mm_s: 48.778
+  w_move_count: 0
+  w_final_estimate_mm: 0.0
+  w_moves_while_beam_on: 0
+  w_moves_while_wire_on: 0
+  g91_count: 35
+  g90_count: 36
+  x_min: 100.932
+  x_max: 137.28
+  y_min: 50.0
+  y_max: 50.0
+  z_min: 0.0
+  z_max: 110.0
+  c_min: 0.0
+  c_max: 12600.0
+  - NOTE: 35 active C-axis deposition moves detected; expected for rotary table mode
+  - WARNING: E2 reaches 48.778 mm/s, above control threshold 40.000 mm/s
+
+Warnings:
+  - Rotary C-table strategy: B fixed, C performs the circular deposition, X sets radius, Z sets layer.
+  - This is experimental for the real Bormash setup: verify C sign, G91 C360 behaviour, C center and speed limits by dry run first.
+  - WARNING: 21 rotary C passes were feed-limited by C max speed; E0/E2 were recalculated for the reduced linear speed.
+  - WARNING: 21 rotary C passes use radius below configured warning radius 18.000 mm.
+  - OK: X range 100.932..137.280 mm fits Bormash limit 0.000..3670.000 mm
+  - OK: Y range 50.000..50.000 mm fits Bormash limit 0.000..1510.000 mm
+  - OK: Z range 0.000..20.000 mm fits Bormash limit 0.000..1443.000 mm
+
+Bormash profile check:
+  limits_ok: True
+  - OK: X range 100.932..137.280 mm fits Bormash limit 0.000..3670.000 mm
+  - OK: Y range 50.000..50.000 mm fits Bormash limit 0.000..1510.000 mm
+  - OK: Z range 0.000..20.000 mm fits Bormash limit 0.000..1443.000 mm
+
+Layer range:
+  first: Z=0.000, I=28.528, speed=650.0 mm/min, wire=47.894 mm/s
+  last:  Z=4.000, I=3.575, speed=83.6 mm/min, wire=6.158 mm/s
+
+Wire-feed control limit note:
+  calculated wire feed reaches 48.778 mm/s; user control limit is 40.000 mm/s.
+  v4.2 does not clamp this value automatically. If the real feeder allows it, raise the control limit; otherwise reduce Z-step, hatch spacing or feed speed.
+
+Important engineering notes:
+  1. This generator uses calculated start regimes, not real closed-loop thermal control.
+  2. Always run dry simulation and a short Z10-15 mm test before full build.
+  3. Verify W retract direction and that W does not conflict with M68 E2 wire speed control.
+  4. If top becomes shiny/liquid early, reduce target energy or add cooling pause.
+  5. If wire knocks/stubs, increase energy or reduce wire feed/layer height.
+  6. Contour passes improve shape but may violate ideal side-wire direction on some segments.

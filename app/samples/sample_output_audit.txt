@@ -1,0 +1,225 @@
+EBAM G-code Studio v4.2.9.6 audit
+============================
+
+Process settings:
+  layer_height: 0.5
+  hatch_spacing: 5.0
+  edge_offset: 0.8
+  min_segment_length: 4.0
+  center_xy: False
+  z_to_zero: True
+  axis_order: XYZ
+  rotate_x_deg: 0.0
+  rotate_y_deg: 0.0
+  rotate_z_deg: 0.0
+  mirror_x: False
+  mirror_y: False
+  mirror_z: False
+  output_offset_x_mm: 0.0
+  output_offset_y_mm: 0.0
+  output_offset_z_mm: 0.0
+  direction: Y-
+  alternate_hatch_shift: True
+  shift_fraction_a: 0.0
+  shift_fraction_b: 0.33
+  shift_fraction_c: -0.33
+  thermal_ordering: skip_neighbours
+  deposition_strategy: continuous
+  link_feed_factor: 1.3
+  bead_width_mm: 0.0
+  overlap_model: tom
+  auto_hatch_from_bead: False
+  alternate_layer_rotation: False
+  contour_passes: 0
+  contour_offset_step: 0.7
+  contour_wire_factor: 0.72
+  contour_feed_factor: 0.88
+  contour_every_n_layers: 1
+  contour_first: False
+  adaptive_thin_wall: True
+  force_contour_on_empty_layers: True
+  adaptive_section_probe: True
+  section_probe_fraction: 0.45
+  thin_wall_hatch_spacing_factor: 0.55
+  thin_wall_edge_offset_factor: 0.35
+  thin_wall_min_segment_length: 1.0
+  thin_wall_wire_factor: 0.65
+  adaptive_wire_correction: True
+  manual_section_fallback: True
+  projection_fallback_if_empty: False
+  minimum_generated_layer_fraction: 0.9
+  max_layers_to_generate: 2
+  progress_update_every_layers: 1
+  target_total_time_s: 0.0
+  target_time_mode: off
+  voltage_kv: 60.0
+  target_energy_bottom_j_per_mm: 158.0
+  target_energy_top_j_per_mm: 138.0
+  feed_bottom_mm_min: 650.0
+  feed_top_mm_min: 710.0
+  wire_diameter_mm: 1.2
+  deposition_efficiency: 1.0
+  density_g_cm3: 7.9
+  focus_ma: 1030.0
+  current_min_ma: 0.0
+  current_low_warning_ma: 1.0
+  current_max_ma: 50.0
+  wire_min_mm_s: 0.3
+  wire_max_mm_s: 40.0
+  z_hop_mm: 7.0
+  lead_in_beam_mm: 0.6
+  soft_start_mm: 2.0
+  soft_finish_mm: 1.8
+  tail_beam_mm: 0.8
+  soft_wire_factor: 0.82
+  edge_wire_factor_bottom: 0.94
+  edge_wire_factor_top: 0.87
+  near_edge_wire_factor_bottom: 0.97
+  near_edge_wire_factor_top: 0.93
+  use_w_retract: False
+  w_retract_mm: 0.8
+  w_retract_feed_mm_min: 720.0
+  use_m68_speed_retract: False
+  speed_retract_mm_s: 3.6
+  speed_retract_time_s: 0.22
+  beam_preheat_s: 0.03
+  wire_settle_s: 0.02
+  beam_off_pause_s: 0.03
+  layer_pause_bottom_s: 0.1
+  layer_pause_top_s: 0.45
+  g64_tolerance_mm: 0.08
+  safe_z_final_mm: 110.0
+  rapid_feed_z_mm_min: 900.0
+  work_z_feed_mm_min: 240.0
+  units: mm
+  machine_name: Bormash EBAM
+  bormash_profile_enabled: True
+  bormash_check_xyz_limits: True
+  bormash_x_min_mm: 0.0
+  bormash_x_max_mm: 3670.0
+  bormash_y_min_mm: 0.0
+  bormash_y_max_mm: 1510.0
+  bormash_z_min_mm: 0.0
+  bormash_z_max_mm: 1443.0
+  include_comments: True
+  max_gcode_lines_warning: 500000
+  max_gcode_size_mb_warning: 20.0
+
+Model / generation stats:
+  active_path_length_m: 0.6888000000000001
+  active_path_length_mm: 688.8000000000001
+  alternate_layer_rotation: False
+  app_version: v4.2.9.6
+  area_mm2: 2000.0
+  bead_width_mm: 0.0
+  bormash_profile_enabled: True
+  contour_path_length_mm: 0.0
+  contour_segments_total: 0
+  current_below_low_warning: False
+  current_clipped_by_limit: False
+  current_clipped_by_max: False
+  current_clipped_by_min: False
+  current_limit_ma: 50.0
+  current_low_warning_ma: 1.0
+  current_min_ma: 0.0
+  current_required_max_ma: 28.52777777777778
+  current_required_min_ma: 28.2625
+  deposition_strategy: continuous
+  energy_actual_max_j_mm: 158.0
+  energy_actual_min_j_mm: 153.0
+  energy_target_max_j_mm: 158.0
+  energy_target_min_j_mm: 153.0
+  energy_volume_max_j_mm3: 63.199999999999996
+  energy_volume_min_j_mm3: 61.19999999999999
+  estimated_active_time_h: 0.01743389242336611
+  estimated_active_time_s: 62.76201272411799
+  estimated_aux_time_s: 4.923333333333334
+  estimated_pause_time_s: 0.2875
+  estimated_segment_z_time_s: 4.433333333333334
+  estimated_total_time_h: 0.02114710766231819
+  estimated_total_time_s: 76.12958758434549
+  estimated_wire_length_m: 1.5225822889124656
+  estimated_wire_length_mm: 1522.5822889124656
+  estimated_wire_mass_kg: 0.013603800000000001
+  feed_max_mm_min: 665.0
+  feed_min_mm_min: 650.0
+  gcode_lines: 109
+  gcode_size_mb: 0.0024232864379882812
+  hatch_spacing_effective_mm: 5.0
+  is_test_truncated: True
+  is_watertight: True
+  layer_fraction: 1.0
+  layers_full_model: 4
+  layers_requested: 2
+  layers_total: 2
+  max_segments_per_layer: 4
+  max_x: 20.0
+  max_y: 100.0
+  max_z: 2.0
+  min_x: 0.0
+  min_y: 0.0
+  min_z: 0.0
+  overlap_model: tom
+  process_wire_warning_limit_mm_s: 40.0
+  segments_total: 7
+  size_x: 20.0
+  size_y: 100.0
+  size_z: 2.0
+  source_type: 2D contour
+  target_time_mode: off
+  target_total_time_s: 0.0
+  volume_mm3: 4000.0
+  wire_above_control_limit: False
+  wire_max_calculated_mm_s: 24.499545637988522
+  wire_min_calculated_mm_s: 23.946924307808327
+
+Static G-code audit:
+  OK: True
+  g0_active: 0
+  active_x_transition: 5
+  active_xy_lines: 0
+  m0_count: 0
+  cycle_count: 0
+  max_current_ma: 28.528
+  max_wire_mm_s: 24.5
+  w_move_count: 0
+  w_final_estimate_mm: 0.0
+  w_moves_while_beam_on: 0
+  w_moves_while_wire_on: 0
+  g91_count: 0
+  g90_count: 1
+  x_min: 1.65
+  x_max: 16.65
+  y_min: 0.8
+  y_max: 99.2
+  z_min: 0.0
+  z_max: 110.0
+  - WARNING: 5 active X motions detected in Y-hatch mode
+
+Warnings:
+  - Deposition strategy: continuous (EBAM continuous beam-on zigzag). Process windows are calculated starting points and require a single-bead/TEST qualification on the real machine.
+  - OK: X range 0.000..20.000 mm fits Bormash limit 0.000..3670.000 mm
+  - OK: Y range 0.000..100.000 mm fits Bormash limit 0.000..1510.000 mm
+  - OK: Z range 0.000..2.000 mm fits Bormash limit 0.000..1443.000 mm
+
+Bormash profile check:
+  limits_ok: True
+  - OK: X range 0.000..20.000 mm fits Bormash limit 0.000..3670.000 mm
+  - OK: Y range 0.000..100.000 mm fits Bormash limit 0.000..1510.000 mm
+  - OK: Z range 0.000..2.000 mm fits Bormash limit 0.000..1443.000 mm
+
+Layer range:
+  first: Z=0.000, I=28.528, speed=650.0 mm/min, wire=23.947 mm/s
+  last:  Z=0.500, I=28.262, speed=665.0 mm/min, wire=24.500 mm/s
+
+Important engineering notes:
+  1. This generator uses calculated start regimes, not real closed-loop thermal control.
+  2. Always run dry simulation and a short Z10-15 mm test before full build.
+  3. Verify W retract direction and that W does not conflict with M68 E2 wire speed control.
+  4. If top becomes shiny/liquid early, reduce target energy or add cooling pause.
+  5. If wire knocks/stubs, increase energy or reduce wire feed/layer height.
+  6. Contour passes improve shape but may violate ideal side-wire direction on some segments.
+
+
+TEST / TRUNCATED FILE:
+  Generated first 2 of 4 model layers only. Do not use as full-part program.

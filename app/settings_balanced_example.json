@@ -1,0 +1,19 @@
+{
+  "layer_height": 0.30,
+  "hatch_spacing": 2.0,
+  "edge_offset": 0.8,
+  "direction": "Y-",
+  "contour_passes": 1,
+  "contour_every_n_layers": 3,
+  "voltage_kv": 60.0,
+  "target_energy_bottom_j_per_mm": 158.0,
+  "target_energy_top_j_per_mm": 138.0,
+  "feed_bottom_mm_min": 650.0,
+  "feed_top_mm_min": 730.0,
+  "wire_diameter_mm": 1.2,
+  "density_g_cm3": 7.9,
+  "focus_ma": 1030.0,
+  "z_hop_mm": 7.0,
+  "use_w_retract": true,
+  "w_retract_mm": 0.8
+}

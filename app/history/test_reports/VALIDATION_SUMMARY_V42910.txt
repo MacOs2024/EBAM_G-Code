@@ -1,0 +1,22 @@
+EBAM G-code Studio v4.2.9.10 validation summary
+================================================
+
+py_compile: PASS
+compileall: PASS
+dependency check: PASS
+extended_parameter_smoke.py: 207/207 PASS
+deep_interaction_test.py: 231/231 PASS
+experience_profile_test.py: 12/12 PASS
+industrial_control_regression_test.py: 10/10 PASS
+streamlit_ui_regression_test.py: 6/6 PASS
+Streamlit AppTest: 0 exceptions
+Streamlit HTTP health: ok
+
+Total automated scenarios: 466 PASS.
+
+Important machine boundary:
+- M67 is emitted only after explicit HAL confirmation.
+- Default remains M68 for Bormash compatibility.
+- M49/M50 are never added; external overrides remain operator-controlled.
+- WIRE override 100% is recommendation only.
+- Real dry run and short hot test remain mandatory.

@@ -1,0 +1,120 @@
+--- /tmp/a_core.py	2026-08-09 00:38:45.995998624 +0000
++++ /tmp/b_core.py	2026-08-09 00:38:45.999977321 +0000
+@@ -80,6 +80,43 @@
+ QV_FAIL_HIGH_J_MM3 = 110.0
+ 
+ 
++def wire_area_from_diameter(wire_diameter_mm: float) -> float:
++    """Cross-section of the filler wire, mm^2. Grows with the SQUARE of diameter:
++    1.2 -> 1.131, 1.6 -> 2.011, 2.0 -> 3.142, 2.5 -> 4.909 mm^2."""
++    d = max(float(wire_diameter_mm), 1e-9)
++    return math.pi * d * d / 4.0
++
++
++def max_wire_feed_for_beam(wire_diameter_mm: float, current_max_ma: float,
++                           voltage_kv: float = 60.0, qv_min_j_mm3: float = QV_MIN_J_MM3,
++                           efficiency: float = 0.97) -> float:
++    """Highest wire feed the BEAM can still melt, mm/s.
++
++    vX: the limit on thick wire is the beam, not the feeder. The beam can melt
++    at most  Q = U*I/QV  mm^3/s; a thicker wire delivers that volume at a proportionally
++    LOWER linear feed, so the feed ceiling scales as 1/area:
++        1.2 mm -> ~40 mm/s, 1.6 -> ~22, 2.0 -> ~14, 2.5 -> ~9  (at 40 mA, QV 55).
++    """
++    melt_rate = (float(voltage_kv) * float(current_max_ma)) / max(float(qv_min_j_mm3), 1e-9)
++    area = wire_area_from_diameter(wire_diameter_mm)
++    return melt_rate / max(area * float(efficiency), 1e-9)
++
++
++def layer_height_bounds_for_wire(wire_diameter_mm: float) -> tuple:
++    """(min, max) sane layer height for a given wire, mm.
++
++    Field data exists only for 1.2 mm wire (proven 0.42..1.53 mm, i.e. 0.35..1.27*d).
++    The same relative band is applied to thicker wires because bead height scales with
++    the deposited volume per unit length, but callers should warn that anything above
++    the proven absolute value is uncalibrated territory.
++    """
++    d = max(float(wire_diameter_mm), 1e-9)
++    return (0.30 * d, 1.40 * d)
++
++
++FIELD_PROVEN_MAX_LAYER_MM = 1.53  # tallest layer actually run on the machine (flange R7/R8)
++
++
+ def energy_j_mm_from_qv(qv_j_mm3: float, layer_height_mm: float, hatch_spacing_mm: float) -> float:
+     """Convert volumetric energy density to line energy for a given bead cross-section.
+ 
+@@ -110,8 +147,48 @@
+         # from R6/R7/R8 flange builds: 55..90 J/mm^3, comfortable ~72.
+         "qv_bottom_j_mm3": 72.0,
+         "qv_top_j_mm3": 63.0,
++        "field_calibrated": True,
+         "note_ru": "Базовый профиль по вашим опытам V16-V21; QV подтверждена наплавками R7/R8."
+     },
++    # vX: thicker stainless wires. QV is a volumetric quantity and does not
++    # depend on wire diameter directly, so the field-proven 72/63 J/mm^3 is used as a
++    # STARTING POINT. Everything that DOES depend on diameter (wire cross-section,
++    # feed limits, layer bounds) is derived automatically. These profiles are NOT yet
++    # field-validated: heat capacity of the incoming metal, pool contact area and
++    # melting inertia all grow with diameter, so the real QV may need to be higher.
++    "stainless_steel_16_wire": {
++        "name_ru": "Нержавеющая сталь, проволока 1.6 мм",
++        "density_g_cm3": 7.9,
++        "wire_diameter_mm": 1.6,
++        "energy_bottom_j_mm": 158.0,
++        "energy_top_j_mm": 138.0,
++        "qv_bottom_j_mm3": 72.0,
++        "qv_top_j_mm3": 63.0,
++        "field_calibrated": False,
++        "note_ru": "Сечение проволоки в 1.78 раза больше, чем у 1.2 мм: подача и пределы пересчитаны автоматически. QV взята от 1.2 мм — ТРЕБУЕТСЯ калибровочный валик."
++    },
++    "stainless_steel_20_wire": {
++        "name_ru": "Нержавеющая сталь, проволока 2.0 мм",
++        "density_g_cm3": 7.9,
++        "wire_diameter_mm": 2.0,
++        "energy_bottom_j_mm": 158.0,
++        "energy_top_j_mm": 138.0,
++        "qv_bottom_j_mm3": 72.0,
++        "qv_top_j_mm3": 63.0,
++        "field_calibrated": False,
++        "note_ru": "Сечение в 2.78 раза больше, чем у 1.2 мм. Тот же расход металла достигается втрое меньшей подачей. QV не подтверждена — ТРЕБУЕТСЯ калибровочный валик."
++    },
++    "stainless_steel_25_wire": {
++        "name_ru": "Нержавеющая сталь, проволока 2.5 мм",
++        "density_g_cm3": 7.9,
++        "wire_diameter_mm": 2.5,
++        "energy_bottom_j_mm": 158.0,
++        "energy_top_j_mm": 138.0,
++        "qv_bottom_j_mm3": 72.0,
++        "qv_top_j_mm3": 63.0,
++        "field_calibrated": False,
++        "note_ru": "Сечение в 4.34 раза больше, чем у 1.2 мм. Требует заметно большей мощности луча на тот же метраж проволоки. QV не подтверждена — ТРЕБУЕТСЯ калибровочный валик."
++    },
+     "steel_generic": {
+         "name_ru": "Сталь, общий стартовый профиль",
+         "density_g_cm3": 7.85,
+@@ -5733,14 +5810,22 @@
+     # recommended a 0.25 mm layer, which at QV=72 and F=650 yields only ~460 W
+     # against the 900 W floor. Grow the layer height (thicker bead) until the
+     # floor is met, within physically sane bounds tied to the wire diameter.
++    # vX: everything that depends on wire diameter is derived here, so that
++    # picking a thicker wire automatically rescales feed limits and layer bounds.
++    _lay_min_d, _lay_max_d = layer_height_bounds_for_wire(s.wire_diameter_mm)
++    _e2_ceiling = max_wire_feed_for_beam(s.wire_diameter_mm, s.current_max_ma,
++                                         s.voltage_kv, QV_MIN_J_MM3, s.deposition_efficiency)
++    s.wire_max_mm_s = round(_e2_ceiling, 1)
++    s.wire_min_mm_s = round(min(float(s.wire_min_mm_s), _e2_ceiling * 0.02), 3)
++
+     _v_bottom = max(float(s.feed_bottom_mm_min), 1.0) / 60.0
+     _p_floor = max(float(s.min_beam_power_w), 0.0)
+     if _p_floor > 0.0 and qv0_mode > 0.0:
+         _section_needed = (_p_floor * 1.08) / (qv0_mode * _v_bottom)
+         _layer_needed = _section_needed / max(s.hatch_spacing, 1e-9)
+         # Sane band for a given wire: not thinner than ~0.3*d, not thicker than ~1.4*d.
+-        _layer_floor_wire = 0.30 * float(s.wire_diameter_mm)
+-        _layer_cap = 1.40 * float(s.wire_diameter_mm)
++        _layer_floor_wire = _lay_min_d
++        _layer_cap = _lay_max_d
+         _target_layer = max(s.layer_height, _layer_needed, _layer_floor_wire)
+         s.layer_height = round(_clamp(_target_layer, 0.08, _layer_cap), 3)
+     s.target_qv_bottom_j_mm3 = float(qv0_mode)

@@ -1,0 +1,179 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_11_WINDOWS_FUSION_CALIBRATION_CONTEXT/ebam_gcode_studio/core.py	2026-07-10 11:43:18.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_11_WINDOWS_FUSION_CALIBRATION_CONTEXT/ebam_gcode_studio/core.py	2026-07-11 01:49:21.218660860 +0000
+@@ -1,4 +1,4 @@
+-"""EBAM G-code Studio core v4.2.9.11.
++"""EBAM G-code Studio core v4.2.9.12.
+ 
+ STL/DXF/CSV -> layer slicing -> EBAM-oriented G-code.
+ Designed for Bormash/FABMETALL-style electron-beam wire deposition.
+@@ -29,8 +29,8 @@
+ Point = Tuple[float, float]
+ Segment = Tuple[float, float, float, float]
+ 
+-APP_VERSION = "v4.2.9.11"
+-EXPERIENCE_PROFILE_VERSION = "v4.2.9.11-experience-profile"
++APP_VERSION = "v4.2.9.12"
++EXPERIENCE_PROFILE_VERSION = "v4.2.9.12-experience-profile"
+ 
+ 
+ BORMASH_LIMITS = {
+@@ -159,6 +159,7 @@
+     rotary_c_center_y_mm: float = 0.0         # stored for documentation/future checks; first mode keeps Y at this value
+     rotary_c_direction: str = "C+"            # C+ or C-
+     rotary_c_start_deg: float = 0.0           # start angle before relative C360 turns
++    rotary_c_seam_scatter_deg: float = 0.0    # per-ring start-angle advance (beam OFF reposition) to scatter the vertical seam; 0=off; e.g. 137.5 golden angle. Relative-turns mode only.
+     rotary_c_b_angle_deg: float = 0.0         # first safe mode keeps B=0; expose for testing but warn if != 0
+     rotary_c_max_deg_min: float = 2100.0      # from Bormash AXIS_C MAX_VELOCITY 35 deg/s = 2100 deg/min
+     rotary_c_min_radius_mm: float = 18.0      # warning threshold only; C feed limiting uses real ring radius when known
+@@ -1466,6 +1467,15 @@
+     lines.append(f"G0 Z{_fmt(z_safe,3)}")
+     lines.append(f"G0 X{_fmt(x_pos,3)} Y{_fmt(y_pos,3)}")
+     lines.append(f"G1 Z{_fmt(layer.z,3)} F{_fmt(settings.work_z_feed_mm_min,1)}")
++    seam = float(getattr(settings, "rotary_c_seam_scatter_deg", 0.0) or 0.0)
++    if seam != 0.0 and bool(getattr(settings, "rotary_c_relative_turns", True)):
++        # Advance the ring start angle while beam and wire are OFF so the
++        # start/stop seam does not stack vertically on one generatrix
++        # (handoff PDF defect: "сильный вертикальный шов"). Relative
++        # reposition keeps the cumulative C counter consistent.
++        lines.append("G91 (relative seam scatter)")
++        lines.append(f"G0 C{_fmt(sign*seam,3)} (seam scatter: start-angle advance, beam OFF)")
++        lines.append("G90 (absolute XYZBC)")
+     lines.append(f"M68 E0 Q{_fmt(layer.current_ma,3)}")
+     if settings.beam_preheat_s > 0:
+         lines.append(f"G4 P{_fmt(settings.beam_preheat_s,3)}")
+@@ -2815,6 +2825,8 @@
+     if float(getattr(settings, "g64_tolerance_mm", 0.08)) < 0 or float(getattr(settings, "g64_naive_cam_q_mm", 0.0)) < 0:
+         raise ValueError("G64 P/Q должны быть >= 0")
+     analog_mode = str(getattr(settings, "analog_output_mode", "m68_compatible")).strip().lower()
++    if abs(float(getattr(settings, "rotary_c_seam_scatter_deg", 0.0) or 0.0)) >= 180.0:
++        raise ValueError("rotary_c_seam_scatter_deg должен быть в диапазоне (-180, 180)")
+     if analog_mode not in ("m68_compatible", "m67_synchronized"):
+         raise ValueError("analog_output_mode должен быть m68_compatible или m67_synchronized")
+     if str(getattr(settings, "wire_feed_mode", "auto")).strip().lower() not in ("auto", "manual_constant", "manual_bottom_top"):
+@@ -3110,6 +3122,126 @@
+     return out
+ 
+ 
++def estimate_eta_from_wall(measured_wall_mm: float, z_step_mm: float,
++                           feed_mm_min: float, wire_e2_mm_s: float,
++                           wire_diameter_mm: float) -> Optional[float]:
++    """Implied deposition efficiency from a real measured wall (handoff PDF 8.2 inverted).
++
++    A_path = wall * z_step; fed area = A_wire * E2 / v  =>  eta = wall*z_step*v/(A_wire*E2).
++    Returns None for non-physical inputs. This mass-side estimate must agree with
++    the bead-matrix estimate from analyze_calibration_results()."""
++    try:
++        wall = float(measured_wall_mm); z = float(z_step_mm)
++        v = float(feed_mm_min) / 60.0; e2 = float(wire_e2_mm_s); d = float(wire_diameter_mm)
++    except (TypeError, ValueError):
++        return None
++    if min(wall, z, v, e2, d) <= 0:
++        return None
++    a_wire = math.pi * (d * 0.5) ** 2
++    return (wall * z * v) / (a_wire * e2)
++
++
++def eta_cross_check(eta_beads: Optional[float], eta_part: Optional[float],
++                    rel_tol: float = 0.20) -> Dict[str, Any]:
++    """Compare two independent eta estimates: bead matrix vs real part wall/mass.
++
++    Agreement within rel_tol means both measurements support each other and the
++    value can be trusted for E2 auto-calc. Disagreement is a DIAGNOSTIC, not an
++    error to hide: usually measurement error, spatter/overflow losses, or the part
++    regime differing thermally from the bead regime."""
++    out: Dict[str, Any] = {"eta_beads": eta_beads, "eta_part": eta_part, "rel_tol": rel_tol}
++    if not eta_beads or not eta_part or eta_beads <= 0 or eta_part <= 0:
++        out["verdict"] = "insufficient"
++        out["message"] = "Недостаточно данных: нужны обе оценки η (валики и деталь)."
++        return out
++    rel = abs(eta_beads - eta_part) / max(eta_part, 1e-9)
++    out["relative_difference"] = rel
++    out["eta_recommended"] = 0.5 * (eta_beads + eta_part)
++    if rel <= rel_tol:
++        out["verdict"] = "agree"
++        out["message"] = (f"η сходится: валики {eta_beads:.2f} vs деталь {eta_part:.2f} "
++                          f"(расхождение {rel*100:.0f}% ≤ {rel_tol*100:.0f}%). "
++                          f"Рекомендуемое η: {out['eta_recommended']:.2f}.")
++    else:
++        out["verdict"] = "disagree"
++        hint = ("η по валикам выше — на детали больше потерь (разбрызгивание/переливы) или ошибка измерения стенки."
++                if eta_beads > eta_part else
++                "η по детали выше — валики измерены заниженно или их режим не совпадает с режимом детали.")
++        out["message"] = (f"η НЕ сходится: валики {eta_beads:.2f} vs деталь {eta_part:.2f} "
++                          f"(расхождение {rel*100:.0f}% > {rel_tol*100:.0f}%). {hint} "
++                          "Не усредняйте вслепую: проверьте измерения и повторите один валик.")
++    return out
++
++
++def generate_m67_hal_check_kit(settings: ProcessSettings) -> Dict[str, str]:
++    """Dry-run kit to qualify synchronized M67 on the real HAL (handoff PDF 17.2 item 3).
++
++    Returns {'gcode', 'checklist'}. Exercises M68 (immediate) vs M67 (applies at
++    next motion) on E0 and E2 with tiny Q and short X moves. SAFETY: dry run ONLY:
++    HV and wire drive must be hardware disabled/interlocked. The kit intentionally
++    CONTAINS M67 - it IS the confirmation procedure; production generators still
++    refuse M67 until machine_m67_confirmed is set after this kit passes. Final
++    all-off is immediate M68, per project rule."""
++    q_small = 1.0
++    f_move = 300.0
++    g: List[str] = []
++    g.append("(=== M67/M68 HAL QUALIFICATION - DRY RUN ONLY ===)")
++    g.append("(BEAM HV OFF + WIRE DRIVE DISABLED/INTERLOCKED BEFORE RUNNING)")
++    g.append("(Watch halmeter/halscope on the analog pins mapped to E0 and E2)")
++    g.append("G21")
++    g.append("G90")
++    g.append("G0 X10 Y10 Z50")
++    g.append("(--- STEP 1: M68 E0 immediate: pin changes DURING the pause, before motion ---)")
++    g.append(f"M68 E0 Q{q_small:.3f}")
++    g.append("G4 P2.000 (pin must ALREADY be at Q here)")
++    g.append("M68 E0 Q0.000")
++    g.append("G4 P1.000")
++    g.append("(--- STEP 2: M67 E0 synchronized: pin must NOT change during pause, only at motion start ---)")
++    g.append(f"M67 E0 Q{q_small:.3f}")
++    g.append("G4 P2.000 (pin must still be 0 here)")
++    g.append(f"G1 X15 F{f_move:.1f} (pin steps to Q exactly when this move starts)")
++    g.append("M68 E0 Q0.000 (immediate OFF)")
++    g.append("G4 P1.000")
++    g.append("(--- STEP 3: same for wire channel E2 ---)")
++    g.append(f"M68 E2 Q{q_small:.3f}")
++    g.append("G4 P2.000 (E2 pin at Q during pause = immediate OK)")
++    g.append("M68 E2 Q0.000")
++    g.append("G4 P1.000")
++    g.append(f"M67 E2 Q{q_small:.3f}")
++    g.append("G4 P2.000 (E2 pin must still be 0 here)")
++    g.append(f"G1 X20 F{f_move:.1f} (E2 pin steps at motion start)")
++    g.append("M68 E2 Q0.000")
++    g.append("(--- STEP 4: M67 queueing across two motions ---)")
++    g.append(f"M67 E0 Q{q_small:.3f}")
++    g.append(f"G1 X25 F{f_move:.1f} (E0 -> Q at start of THIS move)")
++    g.append("M67 E0 Q0.000")
++    g.append(f"G1 X30 F{f_move:.1f} (E0 -> 0 at start of THIS move)")
++    g.append("(--- FINAL: immediate all-off, per project rule ---)")
++    g.append("M68 E0 Q0.000")
++    g.append("M68 E2 Q0.000")
++    g.append("G0 Z60")
++    g.append("M30")
++    checklist_lines = [
++        "M67 HAL QUALIFICATION CHECKLIST (dry run)",
++        "==========================================",
++        "0. АППАРАТНО: HV выключен, привод проволоки отключён/заблокирован, interlocks активны.",
++        "1. Открыть halmeter/halscope на аналоговых пинах E0 и E2 (motion.analog-out-NN по вашему HAL).",
++        "2. Запустить kit в dry run; для каждого шага записать фактическое поведение пина.",
++        "3. КРИТЕРИИ PASS:",
++        "   - STEP1: пин E0 = Q УЖЕ во время паузы G4 (M68 немедленный).",
++        "   - STEP2: пин E0 = 0 всю паузу; скачок в Q ровно на старте G1 X15 (M67 синхронный).",
++        "   - STEP3: то же для E2.",
++        "   - STEP4: каждое M67 применяется на старте СЛЕДУЮЩЕГО движения; без движения не применяется.",
++        "   - Финальный M68 all-off немедленный.",
++        "4. Любое несовпадение (не тот момент, не тот пин, задержки) = M67 НЕ подтверждён:",
++        "   machine_m67_confirmed оставить ВЫКЛ, работать на M68, сохранить запись halscope.",
++        "5. Все PASS: включить 'HAL подтверждён (M67)' — режим m67_synchronized станет доступен",
++        "   для зонных обновлений E0/E2. Финальный OFF всегда остаётся M68.",
++        "6. Повторять после ЛЮБОГО изменения HAL/INI.",
++    ]
++    return {"gcode": "\n".join(g) + "\n", "checklist": "\n".join(checklist_lines)}
++
++
+ def _gcode_header(settings: ProcessSettings, stats: Dict[str, float]) -> List[str]:
+     lines = [
+         f"(Generated by EBAM G-code Studio {APP_VERSION})",

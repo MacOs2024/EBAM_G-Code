@@ -1,0 +1,153 @@
+--- pristine/EBAM_Gcode_Studio_v4_2_9_11_WINDOWS_FUSION_CALIBRATION_CONTEXT/app.py	2026-07-10 11:43:18.000000000 +0000
++++ EBAM_Gcode_Studio_v4_2_9_11_WINDOWS_FUSION_CALIBRATION_CONTEXT/app.py	2026-07-11 01:49:21.221775984 +0000
+@@ -500,7 +500,7 @@
+ def _wire_for_feed(settings: ProcessSettings, feed_mm_min: float, ratio: float = 0.0) -> float:
+     """Wire feed E2 from the same rule used by core.layer_parameters().
+ 
+-    v4.2.9.11 supports operator wire mode:
++    v4.2.9.12 supports operator wire mode:
+     - auto: recalculate E2 from F, Z-step and hatch/radial step;
+     - manual_constant: use one fixed E2;
+     - manual_bottom_top: interpolate E2 over height.
+@@ -681,7 +681,7 @@
+ def _rotary_c_radius_limit_info(summary: dict, settings: ProcessSettings) -> dict:
+     """Choose the radius used for the UI-level C feed limiter.
+ 
+-    v4.2.9.11 separates two meanings that were previously mixed:
++    v4.2.9.12 separates two meanings that were previously mixed:
+     - rotary_c_min_radius_mm is only a warning threshold for small radii;
+     - the C limiter uses the real/estimated minimum toolpath radius when geometry is known.
+ 
+@@ -826,7 +826,7 @@
+ def _apply_rotary_c_feed_limit_to_settings(summary: dict, settings: ProcessSettings):
+     """Apply C-axis speed cap to visible/global F when rotary C auto-limit is enabled.
+ 
+-    v4.2.9.11 applies the C limit before the calculation table and before G-code generation.
++    v4.2.9.12 applies the C limit before the calculation table and before G-code generation.
+     Therefore every downstream value is recalculated from effective F: E0, E2,
+     J/mm, J/mm3, time estimate and warnings. The generator still keeps per-ring
+     protection as a second safety layer.
+@@ -1289,13 +1289,17 @@
+             rotary_c_min_radius_mm = st.number_input(
+                 "Предупреждать радиус ниже, мм (не ограничивает F при известной геометрии)",
+                 min_value=0.1, max_value=500.0, value=18.0, step=1.0,
+-                help="Порог предупреждения для малых C-радиусов. В v4.2.9.11 он не режет F, если программа знает реальные радиусы колец; C-лимит считает по реальному Rmin траектории. Для STL/неизвестной геометрии может использоваться как осторожный fallback.",
++                help="Порог предупреждения для малых C-радиусов. В v4.2.9.12 он не режет F, если программа знает реальные радиусы колец; C-лимит считает по реальному Rmin траектории. Для STL/неизвестной геометрии может использоваться как осторожный fallback.",
+                 key=f"{key_prefix}_rmin",
+             )
+         rotary_c_auto_limit_feed = st.checkbox("Автоограничивать F по лимиту C", value=True, key=f"{key_prefix}_autof")
++        rotary_c_seam_scatter_deg = st.number_input(
++            "Рассеивание шва, град/кольцо (0 = выкл)", min_value=-179.0, max_value=179.0, value=0.0, step=0.5,
++            help="Смещает стартовый угол каждого кольца (репозиция C при ВЫКЛЮЧЕННОМ луче), чтобы шов старт/стоп не накапливался на одной вертикали. Рекомендуется 137.5° (золотой угол). Работает в режиме относительных оборотов; в no-pause шов и так смещается углом перехода.",
++            key=f"{key_prefix}_seam")
+         if abs(rotary_c_b_angle_deg) > 1e-6:
+             st.warning("B отличен от 0. Для первого запуска держать B=0; наклон требует TCP/центра вращения и проверки столкновений.")
+-    return rotary_c_center_x_mm, rotary_c_center_y_mm, rotary_c_direction, rotary_c_start_deg, rotary_c_b_angle_deg, rotary_c_max_deg_min, rotary_c_min_radius_mm, rotary_c_auto_limit_feed
++    return rotary_c_center_x_mm, rotary_c_center_y_mm, rotary_c_direction, rotary_c_start_deg, rotary_c_b_angle_deg, rotary_c_max_deg_min, rotary_c_min_radius_mm, rotary_c_auto_limit_feed, rotary_c_seam_scatter_deg
+ 
+ 
+ def render_radial_strategy_controls(key_prefix: str = "radial"):
+@@ -1482,6 +1486,7 @@
+             rotary_c_b_angle_deg = 0.0
+             rotary_c_max_deg_min = 2100.0
+             rotary_c_min_radius_mm = 18.0
++            rotary_c_seam_scatter_deg = 0.0
+             rotary_c_auto_limit_feed = True
+             st.header("7. Полный набор стратегий проходов")
+             path_choices = FULL_PATH_PLAN_CHOICES
+@@ -1508,7 +1513,7 @@
+                 st.success("Будут построены C-кольца: B фиксирован, X задаёт радиус, Z слой, C делает G91 C360. Проверить C на сухом прогоне.")
+                 (rotary_c_center_x_mm, rotary_c_center_y_mm, rotary_c_direction, rotary_c_start_deg,
+                  rotary_c_b_angle_deg, rotary_c_max_deg_min, rotary_c_min_radius_mm,
+-                 rotary_c_auto_limit_feed) = render_rotary_c_controls("simple_c")
++                 rotary_c_auto_limit_feed, rotary_c_seam_scatter_deg) = render_rotary_c_controls("simple_c")
+             elif decoded_plan["special"] == "rings":
+                 st.success("Будут построены концентрические XY-кольца. Для круглых деталей это технологичнее обычной змейки; для некруглых — приближение.")
+             elif decoded_plan["special"] == "spiral":
+@@ -1556,6 +1561,7 @@
+             rotary_c_max_deg_min=float(rotary_c_max_deg_min),
+             rotary_c_min_radius_mm=float(rotary_c_min_radius_mm),
+             rotary_c_auto_limit_feed=bool(rotary_c_auto_limit_feed),
++            rotary_c_seam_scatter_deg=float(rotary_c_seam_scatter_deg),
+             thermal_ordering="natural",
+             alternate_layer_rotation=False,
+             center_xy=center_xy,
+@@ -1679,6 +1685,7 @@
+         rotary_c_b_angle_deg = 0.0
+         rotary_c_max_deg_min = 2100.0
+         rotary_c_min_radius_mm = 18.0
++        rotary_c_seam_scatter_deg = 0.0
+         rotary_c_auto_limit_feed = True
+         rotary_c_motion_mode = "separate_rings"
+         rotary_c_transition_angle_deg = 17.0
+@@ -1722,7 +1729,7 @@
+             st.success("Будет сгенерирован режим поворотного стола C: сечения переводятся в радиусы, X=центр C+R, C делает G91 C360.")
+             (rotary_c_center_x_mm, rotary_c_center_y_mm, rotary_c_direction, rotary_c_start_deg,
+              rotary_c_b_angle_deg, rotary_c_max_deg_min, rotary_c_min_radius_mm,
+-             rotary_c_auto_limit_feed) = render_rotary_c_controls("adv_c")
++             rotary_c_auto_limit_feed, rotary_c_seam_scatter_deg) = render_rotary_c_controls("adv_c")
+             with st.expander("C-стол: непрерывность, одно кольцо и отключение лишних движений", expanded=True):
+                 motion_ru = st.selectbox(
+                     "Режим C-колец",
+@@ -1936,6 +1943,7 @@
+         rotary_c_max_deg_min=float(rotary_c_max_deg_min),
+         rotary_c_min_radius_mm=float(rotary_c_min_radius_mm),
+         rotary_c_auto_limit_feed=bool(rotary_c_auto_limit_feed),
++        rotary_c_seam_scatter_deg=float(rotary_c_seam_scatter_deg),
+         rotary_c_motion_mode=str(rotary_c_motion_mode),
+         rotary_c_transition_angle_deg=float(rotary_c_transition_angle_deg),
+         rotary_c_continuous_keep_beam_wire_on=bool(rotary_c_continuous_keep_beam_wire_on),
+@@ -2591,6 +2599,53 @@
+                         st.warning(w)
+                     st.caption("Рекомендации — стартовые значения для короткого TEST, не гарантированный режим. "
+                                "Перенесите порог/энергию/Z-шаг/шаг дорожек в 'Создать G-code' вручную.")
++                    if ana.get("deposition_efficiency_estimate"):
++                        st.session_state["cal_eta_beads"] = float(ana["deposition_efficiency_estimate"])
++    with st.expander("Сверка η: валики ↔ реальная деталь"):
++        from ebam_gcode_studio.core import estimate_eta_from_wall, eta_cross_check
++        st.caption("Две независимые оценки коэффициента осаждения должны сходиться: из матрицы валиков и из фактической стенки детали. Расхождение — диагностика (потери, ошибка измерения, разные тепловые режимы).")
++        ec1, ec2 = st.columns(2)
++        with ec1:
++            x_wall = st.number_input("Фактическая стенка детали, мм", min_value=0.0, max_value=100.0, value=0.0, step=0.1, key="etax_wall")
++            x_z = st.number_input("Z-шаг детали, мм", min_value=0.01, max_value=20.0, value=0.5, step=0.05, key="etax_z")
++            x_f = st.number_input("Линейная скорость детали, мм/мин", min_value=1.0, max_value=20000.0, value=700.0, step=10.0, key="etax_f")
++        with ec2:
++            x_e2 = st.number_input("E2 детали, мм/с", min_value=0.01, max_value=60.0, value=5.5, step=0.05, key="etax_e2")
++            x_d = st.number_input("Диаметр проволоки, мм", min_value=0.1, max_value=5.0, value=1.2, step=0.1, key="etax_d")
++            x_beads = st.number_input("η из валиков (авто из анализа выше, можно править)",
++                                      min_value=0.0, max_value=1.5,
++                                      value=float(st.session_state.get("cal_eta_beads", 0.0)), step=0.01, key="etax_beads")
++        if st.button("Сверить η", key="etax_btn"):
++            eta_part = estimate_eta_from_wall(x_wall, x_z, x_f, x_e2, x_d)
++            if eta_part is None:
++                st.error("η по детали не рассчитано: проверьте, что стенка, Z-шаг, скорость и E2 больше нуля.")
++            else:
++                st.write(f"η по детали (масса/стенка): **{eta_part:.2f}**")
++                res_cc = eta_cross_check(x_beads if x_beads > 0 else None, eta_part)
++                if res_cc["verdict"] == "agree":
++                    st.success(res_cc["message"])
++                elif res_cc["verdict"] == "disagree":
++                    st.warning(res_cc["message"])
++                else:
++                    st.info(res_cc["message"])
++    with st.expander("Протокол квалификации M67 по HAL (dry run)"):
++        from ebam_gcode_studio.core import generate_m67_hal_check_kit
++        st.caption("Комплект для подтверждения синхронного M67 на реальном HAL: dry-run G-code + чек-лист. "
++                   "ТОЛЬКО сухой прогон: HV выключен, привод проволоки отключён. Пока чек-лист не пройден, "
++                   "приложение продолжает выдавать M68 (гейт machine_m67_confirmed не трогается автоматически).")
++        if st.button("Сформировать комплект M67", key="m67kit_btn"):
++            kit = generate_m67_hal_check_kit(ProcessSettings())
++            st.session_state["m67_kit"] = kit
++        if "m67_kit" in st.session_state:
++            kit = st.session_state["m67_kit"]
++            import io as _io2, zipfile as _zf2
++            _b2 = _io2.BytesIO()
++            with _zf2.ZipFile(_b2, "w", _zf2.ZIP_DEFLATED) as zf2:
++                zf2.writestr("m67_hal_check_DRYRUN.ngc", kit["gcode"])
++                zf2.writestr("m67_hal_checklist_RU.txt", kit["checklist"])
++            st.download_button("Скачать комплект M67 (ZIP)", data=_b2.getvalue(),
++                               file_name="ebam_m67_hal_check_kit.zip", mime="application/zip", key="m67kit_dl")
++            st.code(kit["checklist"], language=None)
+     st.markdown("---")
+     st.caption("By Керенцев Максим")
+     st.stop()

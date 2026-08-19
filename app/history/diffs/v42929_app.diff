@@ -1,0 +1,66 @@
+--- /tmp/a28.py	2026-07-21 05:48:21.373633441 +0000
++++ /tmp/b29.py	2026-07-21 05:48:21.377985382 +0000
+@@ -32,6 +32,8 @@
+ 
+ st.set_page_config(page_title=f"EBAM G-Code Studio {APP_VERSION}", layout="wide")
+ st.title(f"EBAM G-Code Studio {APP_VERSION}")
++_steps = ["1·STL/режим", "2·параметры", "3·проверка", "4·TEST", "5·файл"]
++st.caption("Этапы: " + "  →  ".join(_steps) + "  ·  FOCUS-режим и «Принять как базу» помогают идти по шагам.")
+ st.caption("Простой и расширенный режимы • расчёт • предпросмотр • G-code • обратный анализ")
+ 
+ st.info("Стартовый расчёт для EBAM. Перед полной деталью: предпросмотр, TEST Z10–15 мм, сухой прогон, проверка W-ретракта.")
+@@ -1782,6 +1784,9 @@
+             st.warning("Z-шаг выше 2 мм — экспериментальный режим. Проверять только через короткий TEST: резко растёт подача проволоки и риск недоплава/тыкания проволоки.")
+         st.session_state.setdefault("w_adv_hatch", float(recommended.hatch_spacing))
+         hatch_spacing = st.number_input("Шаг дорожек, мм", min_value=0.2, max_value=10.0, step=0.05, key="w_adv_hatch")
++        if float(hatch_spacing) > 0:
++            _bw_hint = float(hatch_spacing) / 0.738
++            st.caption(f"↳ при валике ~{_bw_hint:.1f} мм это TOM-перекрытие 26%; валиков на 100 мм ширины: {100.0/float(hatch_spacing):.0f}")
+         wire_d = st.number_input("Диаметр проволоки, мм", min_value=0.2, max_value=5.0, value=float(recommended.wire_diameter_mm), step=0.1)
+         deposition_efficiency = st.number_input(
+             "Коэффициент осаждения η", min_value=0.10, max_value=1.00,
+@@ -2613,6 +2618,44 @@
+         st.info("Загрузите готовый .ngc/.gcode/.nc/.tap/.txt файл. В этом режиме STL/DXF/CSV не нужен.")
+         return None
+ 
++    with st.expander("🎞️ Симулятор по слоям (раскраска по QV)", expanded=False):
++        try:
++            _rawp = gcode_upload.getvalue()
++            _txtp = _rawp.decode("utf-8", errors="replace") if isinstance(_rawp, bytes) else str(_rawp)
++            _prof = _gtools.layer_ring_profile(_txtp)
++            if not _prof["has_data"]:
++                st.caption("В этом файле нет кольцевых комментариев (RING …) — симулятор доступен для C-стратегий с комментариями.")
++            else:
++                _nL = len(_prof["layers"])
++                _li = st.slider("Слой", min_value=1, max_value=_nL, value=1, step=1, key=f"{key_prefix}_sim_layer") if _nL > 1 else 1
++                _L = _prof["layers"][_li - 1]
++                st.caption(f"Слой {_L['layer']}/{_prof['layers'][-1]['total']} · зона {_L['zone']} · "
++                           f"Z {_L['z0']:.2f}–{_L['z1']:.2f} мм · колец {len(_L['rings'])}")
++                _Rs = [r["R"] for r in _L["rings"]]
++                _QVs = [r["qv"] for r in _L["rings"]]
++                _fig, _ax = plt.subplots(figsize=(6.4, 6.4))
++                # concentric rings coloured by QV: green(safe)->red(fail ~42)
++                _vmin, _vmax = 42.0, max(70.0, _prof["qv_max"])
++                for _r, _qv in zip(_Rs, _QVs):
++                    _frac = max(0.0, min(1.0, (_qv - _vmin) / max(_vmax - _vmin, 1e-9)))
++                    _col = (1.0 - _frac, 0.35 + 0.5 * _frac, 0.2)  # red->green
++                    _ax.add_patch(plt.Circle((0, 0), _r, fill=False, lw=2.2, color=_col))
++                _lim = (max(_Rs) if _Rs else 1.0) * 1.1
++                _ax.set_xlim(-_lim, _lim)
++                _ax.set_ylim(-_lim, _lim)
++                _ax.set_aspect("equal")
++                _ax.set_title(f"Кольца слоя {_L['layer']} — цвет = QV (красный ≤42 отказ, зелёный комфорт)")
++                _ax.set_xlabel("мм")
++                st.pyplot(_fig)
++                _wmin = min(_QVs) if _QVs else 0.0
++                if _wmin <= 46.5:
++                    st.warning(f"На этом слое минимум QV = {_wmin:.1f} Дж/мм³ — близко к порогу отказа (~42). "
++                               "Красные кольца — зона, где в поле проволока лезла из ванны.")
++                else:
++                    st.caption(f"Минимум QV на слое: {_wmin:.1f} Дж/мм³.")
++        except Exception as _e:
++            st.caption(f"Симулятор недоступен для этого файла: {_e}")
++
+     with st.expander("🔬 Сравнить с другим G-code (diff двух файлов)", expanded=False):
+         gcode_upload_b = st.file_uploader(
+             "Второй .ngc/.gcode для сравнения",
