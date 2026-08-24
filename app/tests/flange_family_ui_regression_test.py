@@ -7,8 +7,8 @@ from pathlib import Path
 from streamlit.testing.v1 import AppTest
 
 
-ROOT = Path(__file__).resolve().parent
-REFERENCE_STL = Path("/workspace/scratch/39793d1130d4/upload/Flange1(2).STL")
+ROOT = Path(__file__).resolve().parent.parent
+REFERENCE_STL = ROOT / "qualification" / "FlangeFamily_v42919_REFERENCE_ID40" / "Flange1_2_.STL"
 
 
 def one(items, label: str):

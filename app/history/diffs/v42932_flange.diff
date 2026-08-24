@@ -1,0 +1,54 @@
+diff --git a/app/flange_family_generator.py b/app/flange_family_generator.py
+index ba3a1e1..57bdc5c 100644
+--- a/app/flange_family_generator.py
++++ b/app/flange_family_generator.py
+@@ -445,6 +445,36 @@ def _target_energy(layer_index: int) -> float:
+     return {1: 42.0, 2: 40.0, 3: 38.0, 4: 36.5}.get(layer_index, 35.0)
+ 
+ 
++C_AXIS_ACCEL_DEG_S2 = 100.0  # ebam.ini, [AXIS_C] MAX_ACCELERATION
++
++
++def _accel_overhead_min(segments: list["Segment"]) -> float:
++    """Насколько разгон стола удлиняет наплавку сверх плана, мин.
++
++    План считает движение идеально, как путь/скорость. Реально линейное ускорение
++    точки на радиусе R равно a_C * pi * R / 180: на малом радиусе кольцо целиком
++    укладывается в разгон и торможение, и время растёт в разы. Возвращается именно
++    надбавка, чтобы её можно было прибавить к плану, не пересчитывая выдержки.
++    """
++    total_s = 0.0
++    for s in segments:
++        d = abs(float(s.length_mm))
++        v = float(s.linear_speed_mm_s)
++        r = max(abs(float(s.radius_start_mm)), abs(float(s.radius_end_mm)))
++        a = C_AXIS_ACCEL_DEG_S2 * math.pi * r / 180.0
++        if d <= 0.0 or v <= 0.0:
++            continue
++        ideal_s = d / v
++        if a <= 0.0:
++            real_s = ideal_s
++        elif d >= v * v / a:
++            real_s = ideal_s + v / a
++        else:
++            real_s = 2.0 * math.sqrt(d / a)
++        total_s += max(0.0, real_s - ideal_s)
++    return total_s / 60.0
++
++
+ def _polar_link_length(r0: float, r1: float, c_deg: float) -> float:
+     n = 64
+     theta = math.radians(c_deg)
+@@ -649,6 +679,12 @@ def collect_summary(profile: GeometryProfile, settings: FlangeFamilySettings, la
+             "deterministic_program_time_h_excluding_M0": deterministic_min / 60.0,
+             "planned_hmi_verification_pause_min": settings.planned_hmi_verify_min,
+             "planned_total_time_h": planned_min / 60.0,
++            # План задаёт скорости, ток и подачу, поэтому считается по идеальному
++            # «путь/скорость» и не меняется. Но стол разгоняется всего 100 °/с²
++            # (ebam.ini, [AXIS_C]), и фактическая наплавка выходит длиннее — тем
++            # заметнее, чем меньше радиус кольца. Эта величина показывает реальное
++            # время, ничего не меняя в самой программе.
++            "estimated_total_time_with_accel_h": (planned_min + _accel_overhead_min(segs)) / 60.0,
+             "all_layers_direction": "inner_to_outer",
+             "c_direction": "positive_only",
+         },

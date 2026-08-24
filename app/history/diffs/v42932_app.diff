@@ -1,0 +1,72 @@
+diff --git a/app/app.py b/app/app.py
+index e347dee..d1bbb5d 100644
+--- a/app/app.py
++++ b/app/app.py
+@@ -14,6 +14,7 @@ import numpy as np
+ 
+ from ebam_gcode_studio.core import (
+     APP_VERSION, ProcessSettings, MATERIAL_LIBRARY, FIELD_PROVEN_MAX_LAYER_MM,
++    BORMASH_WIRE_ROLLERS_MM, resolve_material_key, wire_roller_note,
+     max_wire_feed_for_beam, wire_area_from_diameter,
+     load_mesh_any, normalize_mesh, mesh_summary,
+     generate_from_mesh, generate_from_polygons_2d,
+@@ -1592,7 +1593,10 @@ def geometry_thermal_note(summary: dict, src_type: str, settings: ProcessSetting
+     return " ".join(notes)
+ 
+ def apply_material_to_settings(settings: ProcessSettings, key: str) -> ProcessSettings:
+-    mat = MATERIAL_LIBRARY.get(key, MATERIAL_LIBRARY["stainless_steel_12_wire"])
++    resolved_key, migration_note = resolve_material_key(key)
++    if migration_note:
++        st.warning(migration_note)
++    mat = MATERIAL_LIBRARY[resolved_key]
+     settings.density_g_cm3 = float(mat.get("density_g_cm3", settings.density_g_cm3))
+     settings.wire_diameter_mm = float(mat.get("wire_diameter_mm", settings.wire_diameter_mm))
+     settings.target_energy_bottom_j_per_mm = float(mat.get("energy_bottom_j_mm", settings.target_energy_bottom_j_per_mm))
+@@ -1840,7 +1844,14 @@ def build_settings(summary, mode, material_key, advanced_mode: bool = True):
+         if float(hatch_spacing) > 0:
+             _bw_hint = float(hatch_spacing) / 0.738
+             st.caption(f"↳ при валике ~{_bw_hint:.1f} мм это TOM-перекрытие 26%; валиков на 100 мм ширины: {100.0/float(hatch_spacing):.0f}")
+-        wire_d = st.number_input("Диаметр проволоки, мм", min_value=0.2, max_value=5.0, value=float(recommended.wire_diameter_mm), step=0.1)
++        wire_d = st.number_input(
++            "Диаметр проволоки, мм", min_value=0.2, max_value=5.0,
++            value=float(recommended.wire_diameter_mm), step=0.1,
++            help="Ролики подачи «Бормаша»: " + ", ".join(f"{r:g}" for r in BORMASH_WIRE_ROLLERS_MM) + " мм."
++        )
++        _roller_note = wire_roller_note(wire_d)
++        if _roller_note:
++            st.warning(_roller_note)
+         deposition_efficiency = st.number_input(
+             "Коэффициент осаждения η", min_value=0.10, max_value=1.00,
+             value=float(getattr(recommended, "deposition_efficiency", 1.0)), step=0.01, format="%.3f",
+@@ -1949,6 +1960,7 @@ def build_settings(summary, mode, material_key, advanced_mode: bool = True):
+         g64_naive_cam_q_mm = 0.0
+         analog_output_mode = "m68_compatible"
+         machine_m67_confirmed = False
++        emit_layer_number_e4 = False
+         rotary_c_radius_variation_tolerance_mm = 0.05
+         st.header("8. Полный набор стратегий проходов")
+         path_choices = FULL_PATH_PLAN_CHOICES
+@@ -2123,6 +2135,15 @@ def build_settings(summary, mode, material_key, advanced_mode: bool = True):
+                 value=0.05, step=0.01, format="%.3f",
+                 help="Если радиус по высоте меняется сильнее, фиксированный X даст неверную чашу/баллон, поэтому генерация блокируется."
+             )
++            emit_layer_number_e4 = st.checkbox(
++                "Передавать номер слоя на пульт (M68 E4)", value=False,
++                help="Пульт «Бормаша» документирует канал E4 как номер слоя. В присланной конфигурации "
++                     "выход motion.analog-out-04 ни к чему не подключён, поэтому строка будет записана, "
++                     "но станком пока не считывается. Включайте, когда E4 свяжут с учётом ресурса в HAL."
++            )
++            if emit_layer_number_e4:
++                st.info("Номер слоя выдаётся одной строкой M68 E4 в начале каждого слоя, во всех стратегиях. "
++                        "Всегда M68: синхронизация с движением здесь не нужна, а M67 требует HAL-кита.")
+             if path_control_mode in ("g61", "g61_1") and rotary_c_motion_mode == "no_pause_flat_rings":
+                 st.warning("G61/G61.1 конфликтует с целью C без остановок: на границах G-code возможны сильные замедления или остановка.")
+             if analog_output_mode == "m67_synchronized" and not machine_m67_confirmed:
+@@ -2247,6 +2268,7 @@ def build_settings(summary, mode, material_key, advanced_mode: bool = True):
+         g64_naive_cam_q_mm=float(g64_naive_cam_q_mm),
+         analog_output_mode=str(analog_output_mode),
+         machine_m67_confirmed=bool(machine_m67_confirmed),
++        emit_layer_number_e4=bool(emit_layer_number_e4),
+         wire_feed_mode=str(wire_feed_mode),
+         wire_feed_manual_mm_s=float(wire_feed_manual_mm_s),
+         wire_feed_bottom_mm_s=float(wire_feed_bottom_mm_s),

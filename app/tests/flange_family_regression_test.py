@@ -18,8 +18,12 @@ from flange_family_generator import (
 )
 
 
-ROOT = Path(__file__).resolve().parent
-REFERENCE_STL = Path("/workspace/scratch/39793d1130d4/upload/Flange1(2).STL")
+ROOT = Path(__file__).resolve().parent.parent
+REFERENCE_STL = ROOT / "qualification" / "FlangeFamily_v42919_REFERENCE_ID40" / "Flange1_2_.STL"
+# Историческое имя эталона содержит круглые скобки. В комментарии LinuxCNC они
+# недопустимы, генератор обязан заменить их на [2] — проверяем это на копии,
+# названной по-исходному.
+REFERENCE_NAME = "Flange1(2).STL"
 
 
 def close(a: float, b: float, tol: float) -> None:
@@ -46,7 +50,7 @@ def check_package(stl: Path, name: str) -> dict[str, float | int | str]:
         hot = (out / "FlangeFamily_FULL_EXPERIMENTAL.ngc").read_text(encoding="utf-8")
         dry = (out / "FlangeFamily_FULL_DRY_RUN_E0E2_ZERO.ngc").read_text(encoding="utf-8")
         assert not linuxcnc_comment_errors_text(hot)
-        assert "(SOURCE: Flange1[2].STL)" in hot if stl.name == REFERENCE_STL.name else True
+        assert "(SOURCE: Flange1[2].STL)" in hot if stl.name == REFERENCE_NAME else True
         assert "M0 (MANDATORY HMI CHECK SCAN 300HZ X10 Y10" in hot
         assert hot.index("M0 (MANDATORY HMI CHECK SCAN 300HZ X10 Y10") < hot.index("M67 E0 Q")
         hot_e0, hot_e2 = command_values(hot, 0), command_values(hot, 2)
@@ -69,7 +73,10 @@ def check_package(stl: Path, name: str) -> dict[str, float | int | str]:
 
 def main() -> None:
     assert REFERENCE_STL.is_file(), REFERENCE_STL
-    reference = check_package(REFERENCE_STL, "reference")
+    with tempfile.TemporaryDirectory(prefix="flange_family_reference_") as td:
+        named = Path(td) / REFERENCE_NAME
+        named.write_bytes(REFERENCE_STL.read_bytes())
+        reference = check_package(named, "reference")
     close(float(reference["od_mm"]), 164.0, 0.02)
     close(float(reference["id_mm"]), 40.0, 0.02)
     close(float(reference["height_mm"]), 47.5, 0.02)
@@ -93,7 +100,9 @@ def main() -> None:
     app = (ROOT / "app.py").read_text(encoding="utf-8")
     core = (ROOT / "ebam_gcode_studio" / "core.py").read_text(encoding="utf-8")
     assert "Flange-family R6 (STL → C-кольца)" in app
-    assert 'APP_VERSION = "v4.2.9.19"' in core
+    # Версия ядра растёт с каждым релизом: проверяем формат, а не конкретный номер
+    # (жёсткая привязка к v4.2.9.19 ломала этот набор начиная с v4.2.9.20).
+    assert re.search(r'APP_VERSION = "v\d+(?:\.\d+)+"', core)
     results = {"reference": reference, "changed_geometry": variant, "status": "PASS"}
     (ROOT / "flange_family_regression_results.json").write_text(
         json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
