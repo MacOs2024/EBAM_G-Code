@@ -7,6 +7,10 @@ from streamlit.testing.v1 import AppTest
 from ebam_gcode_studio.core import APP_VERSION
 
 
+# AppTest резолвит относительные пути от файла теста, а app.py лежит уровнем выше.
+APP_FILE = Path(__file__).resolve().parent.parent / "app.py"
+
+
 def by_label(items, label: str):
     matches = [item for item in items if item.label == label]
     if not matches:
@@ -20,7 +24,7 @@ def messages(items) -> list[str]:
 
 def main() -> None:
     checks: list[str] = []
-    at = AppTest.from_file("app.py", default_timeout=60).run(timeout=60)
+    at = AppTest.from_file(str(APP_FILE), default_timeout=60).run(timeout=60)
     assert not at.exception, [e.value for e in at.exception]
     assert any(APP_VERSION in str(t.value) for t in at.title)
     checks.append("simple_mode_loads")

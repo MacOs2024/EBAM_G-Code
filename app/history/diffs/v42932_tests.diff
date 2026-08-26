@@ -1,0 +1,171 @@
+diff --git a/app/tests/flange_family_regression_test.py b/app/tests/flange_family_regression_test.py
+index 1d5ee08..9cc13c3 100644
+--- a/app/tests/flange_family_regression_test.py
++++ b/app/tests/flange_family_regression_test.py
+@@ -18,8 +18,12 @@ from flange_family_generator import (
+ )
+ 
+ 
+-ROOT = Path(__file__).resolve().parent
+-REFERENCE_STL = Path("/workspace/scratch/39793d1130d4/upload/Flange1(2).STL")
++ROOT = Path(__file__).resolve().parent.parent
++REFERENCE_STL = ROOT / "qualification" / "FlangeFamily_v42919_REFERENCE_ID40" / "Flange1_2_.STL"
++# Историческое имя эталона содержит круглые скобки. В комментарии LinuxCNC они
++# недопустимы, генератор обязан заменить их на [2] — проверяем это на копии,
++# названной по-исходному.
++REFERENCE_NAME = "Flange1(2).STL"
+ 
+ 
+ def close(a: float, b: float, tol: float) -> None:
+@@ -46,7 +50,7 @@ def check_package(stl: Path, name: str) -> dict[str, float | int | str]:
+         hot = (out / "FlangeFamily_FULL_EXPERIMENTAL.ngc").read_text(encoding="utf-8")
+         dry = (out / "FlangeFamily_FULL_DRY_RUN_E0E2_ZERO.ngc").read_text(encoding="utf-8")
+         assert not linuxcnc_comment_errors_text(hot)
+-        assert "(SOURCE: Flange1[2].STL)" in hot if stl.name == REFERENCE_STL.name else True
++        assert "(SOURCE: Flange1[2].STL)" in hot if stl.name == REFERENCE_NAME else True
+         assert "M0 (MANDATORY HMI CHECK SCAN 300HZ X10 Y10" in hot
+         assert hot.index("M0 (MANDATORY HMI CHECK SCAN 300HZ X10 Y10") < hot.index("M67 E0 Q")
+         hot_e0, hot_e2 = command_values(hot, 0), command_values(hot, 2)
+@@ -69,7 +73,10 @@ def check_package(stl: Path, name: str) -> dict[str, float | int | str]:
+ 
+ def main() -> None:
+     assert REFERENCE_STL.is_file(), REFERENCE_STL
+-    reference = check_package(REFERENCE_STL, "reference")
++    with tempfile.TemporaryDirectory(prefix="flange_family_reference_") as td:
++        named = Path(td) / REFERENCE_NAME
++        named.write_bytes(REFERENCE_STL.read_bytes())
++        reference = check_package(named, "reference")
+     close(float(reference["od_mm"]), 164.0, 0.02)
+     close(float(reference["id_mm"]), 40.0, 0.02)
+     close(float(reference["height_mm"]), 47.5, 0.02)
+@@ -93,7 +100,9 @@ def main() -> None:
+     app = (ROOT / "app.py").read_text(encoding="utf-8")
+     core = (ROOT / "ebam_gcode_studio" / "core.py").read_text(encoding="utf-8")
+     assert "Flange-family R6 (STL → C-кольца)" in app
+-    assert 'APP_VERSION = "v4.2.9.19"' in core
++    # Версия ядра растёт с каждым релизом: проверяем формат, а не конкретный номер
++    # (жёсткая привязка к v4.2.9.19 ломала этот набор начиная с v4.2.9.20).
++    assert re.search(r'APP_VERSION = "v\d+(?:\.\d+)+"', core)
+     results = {"reference": reference, "changed_geometry": variant, "status": "PASS"}
+     (ROOT / "flange_family_regression_results.json").write_text(
+         json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+diff --git a/app/tests/flange_family_ui_regression_test.py b/app/tests/flange_family_ui_regression_test.py
+index 391d5de..fadf88b 100644
+--- a/app/tests/flange_family_ui_regression_test.py
++++ b/app/tests/flange_family_ui_regression_test.py
+@@ -7,8 +7,8 @@ from pathlib import Path
+ from streamlit.testing.v1 import AppTest
+ 
+ 
+-ROOT = Path(__file__).resolve().parent
+-REFERENCE_STL = Path("/workspace/scratch/39793d1130d4/upload/Flange1(2).STL")
++ROOT = Path(__file__).resolve().parent.parent
++REFERENCE_STL = ROOT / "qualification" / "FlangeFamily_v42919_REFERENCE_ID40" / "Flange1_2_.STL"
+ 
+ 
+ def one(items, label: str):
+diff --git a/app/tests/streamlit_ui_regression_test.py b/app/tests/streamlit_ui_regression_test.py
+index e1e9e78..4fdfbca 100644
+--- a/app/tests/streamlit_ui_regression_test.py
++++ b/app/tests/streamlit_ui_regression_test.py
+@@ -7,6 +7,10 @@ from streamlit.testing.v1 import AppTest
+ from ebam_gcode_studio.core import APP_VERSION
+ 
+ 
++# AppTest резолвит относительные пути от файла теста, а app.py лежит уровнем выше.
++APP_FILE = Path(__file__).resolve().parent.parent / "app.py"
++
++
+ def by_label(items, label: str):
+     matches = [item for item in items if item.label == label]
+     if not matches:
+@@ -20,7 +24,7 @@ def messages(items) -> list[str]:
+ 
+ def main() -> None:
+     checks: list[str] = []
+-    at = AppTest.from_file("app.py", default_timeout=60).run(timeout=60)
++    at = AppTest.from_file(str(APP_FILE), default_timeout=60).run(timeout=60)
+     assert not at.exception, [e.value for e in at.exception]
+     assert any(APP_VERSION in str(t.value) for t in at.title)
+     checks.append("simple_mode_loads")
+diff --git a/app/tests/wire_diameter_regression_test.py b/app/tests/wire_diameter_regression_test.py
+index 1f48af8..9c6a60e 100644
+--- a/app/tests/wire_diameter_regression_test.py
++++ b/app/tests/wire_diameter_regression_test.py
+@@ -1,4 +1,8 @@
+-"""Regression: v4.2.9.31 stainless wire diameters 1.2 / 1.6 / 2.0 / 2.5 mm.
++"""Regression: stainless wire diameters on the rollers the Bormash actually has.
++
++The machine carries six feed rollers (ebam.ini [ROLLER_SCALE]): 0.8 / 1.2 / 1.6 /
++2.0 / 2.4 / 3.2 mm. A 2.5 mm profile shipped up to v4.2.9.31 by mistake — there is
++no such roller — and is now migrated to 2.4 mm.
+ 
+ QV (J/mm^3) is a volumetric quantity and does not depend on wire diameter, so the
+ field-proven 72/63 is reused as a starting point. Everything that DOES depend on
+@@ -15,10 +19,11 @@ def check(name, cond, detail=""):
+     if not cond:
+         failures.append({"name": name, "detail": str(detail)[:140]})
+ 
+-WIRES = {"stainless_steel_12_wire": 1.2, "stainless_steel_16_wire": 1.6,
+-         "stainless_steel_20_wire": 2.0, "stainless_steel_25_wire": 2.5}
++WIRES = {"stainless_steel_08_wire": 0.8, "stainless_steel_12_wire": 1.2,
++         "stainless_steel_16_wire": 1.6, "stainless_steel_20_wire": 2.0,
++         "stainless_steel_24_wire": 2.4, "stainless_steel_32_wire": 3.2}
+ 
+-# 1. all four profiles exist with QV and correct diameter
++# 1. every roller has a profile with QV and the correct diameter
+ for key, d in WIRES.items():
+     check(f"exists_{key}", key in core.MATERIAL_LIBRARY, key)
+     m = core.MATERIAL_LIBRARY[key]
+@@ -32,20 +37,20 @@ check("only_12_calibrated",
+ # 2. area grows as d^2
+ for d in WIRES.values():
+     check(f"area_{d}", abs(core.wire_area_from_diameter(d) - math.pi * d * d / 4) < 1e-12)
+-check("area_ratio_25_vs_12",
+-      abs(core.wire_area_from_diameter(2.5) / core.wire_area_from_diameter(1.2) - 4.34) < 0.02)
++check("area_ratio_24_vs_12",
++      abs(core.wire_area_from_diameter(2.4) / core.wire_area_from_diameter(1.2) - 4.0) < 1e-9)
+ 
+ # 3. beam-limited feed falls as 1/area, and matches the empirical 40 mm/s for 1.2 mm
+ f12 = core.max_wire_feed_for_beam(1.2, 40.0)
+ check("feed_12_matches_empirical", 36.0 <= f12 <= 44.0, f12)
+ prev = None
+-for d in (1.2, 1.6, 2.0, 2.5):
++for d in (0.8, 1.2, 1.6, 2.0, 2.4, 3.2):
+     f = core.max_wire_feed_for_beam(d, 40.0)
+     if prev is not None:
+         check(f"feed_falls_{d}", f < prev, f"{f} !< {prev}")
+     prev = f
+ check("feed_scales_inverse_area",
+-      abs(core.max_wire_feed_for_beam(2.5, 40.0) * core.wire_area_from_diameter(2.5)
++      abs(core.max_wire_feed_for_beam(2.4, 40.0) * core.wire_area_from_diameter(2.4)
+           - core.max_wire_feed_for_beam(1.2, 40.0) * core.wire_area_from_diameter(1.2)) < 1e-6)
+ 
+ # 4. layer bounds scale with diameter
+@@ -76,10 +81,23 @@ for key, d in WIRES.items():
+ #    over-optimistic value must NOT block generation - but the physics helper must
+ #    still report the true beam-limited ceiling for that diameter.
+ core.validate_process_settings(core.ProcessSettings(
+-    wire_diameter_mm=2.5, wire_max_mm_s=40.0, current_max_ma=40.0), height=30)
++    wire_diameter_mm=2.4, wire_max_mm_s=40.0, current_max_ma=40.0), height=30)
+ check("wire_max_is_not_a_hard_block", True)
+-check("ceiling_much_lower_than_naive_40", core.max_wire_feed_for_beam(2.5, 40.0) < 12.0,
+-      core.max_wire_feed_for_beam(2.5, 40.0))
++check("ceiling_much_lower_than_naive_40", core.max_wire_feed_for_beam(2.4, 40.0) < 12.0,
++      core.max_wire_feed_for_beam(2.4, 40.0))
++
++# 7. the profile set matches the real roller list, and the retired 2.5 mm key is
++#    migrated explicitly instead of silently falling back to 1.2 mm.
++profile_diams = sorted({round(float(core.MATERIAL_LIBRARY[k]["wire_diameter_mm"]), 3) for k in WIRES})
++check("profiles_match_machine_rollers", tuple(profile_diams) == core.BORMASH_WIRE_ROLLERS_MM, profile_diams)
++check("no_25_profile_left", "stainless_steel_25_wire" not in core.MATERIAL_LIBRARY)
++_key, _note = core.resolve_material_key("stainless_steel_25_wire")
++check("legacy_25_migrates_to_24", _key == "stainless_steel_24_wire", _key)
++check("legacy_25_explains_itself", bool(_note) and "2.4" in str(_note), _note)
++_k2, _n2 = core.resolve_material_key("stainless_steel_12_wire")
++check("known_key_unchanged_and_silent", _k2 == "stainless_steel_12_wire" and _n2 is None, (_k2, _n2))
++_k3, _n3 = core.resolve_material_key("nonsense_profile")
++check("unknown_key_falls_back_loudly", _k3 == "stainless_steel_12_wire" and bool(_n3), (_k3, _n3))
+ 
+ print(json.dumps({"cases_total": len(failures) + 90, "failures": failures}, ensure_ascii=False))
+ if failures:

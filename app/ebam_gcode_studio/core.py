@@ -1,4 +1,4 @@
-"""EBAM G-code Studio core v4.2.9.31.
+"""EBAM G-code Studio core v4.2.9.32.
 
 STL/DXF/CSV -> layer slicing -> EBAM-oriented G-code.
 Designed for Bormash/FABMETALL-style electron-beam wire deposition.
@@ -29,8 +29,8 @@ except Exception as exc:  # pragma: no cover
 Point = Tuple[float, float]
 Segment = Tuple[float, float, float, float]
 
-APP_VERSION = "v4.2.9.31"
-EXPERIENCE_PROFILE_VERSION = "v4.2.9.31-experience-profile"
+APP_VERSION = "v4.2.9.32"
+EXPERIENCE_PROFILE_VERSION = "v4.2.9.32-experience-profile"
 
 
 BORMASH_LIMITS = {
@@ -38,6 +38,36 @@ BORMASH_LIMITS = {
     "y_min": 0.0, "y_max": 1510.0,
     "z_min": 0.0, "z_max": 1443.0,
 }
+
+# Ускорения из ebam.ini. Поворотный стол разгоняется вчетверо медленнее линейных
+# осей (100 °/с² против 1000 мм/с²), и на малых радиусах это перестаёт быть
+# поправкой: короткое кольцо целиком укладывается в разгон и торможение, так что
+# идеальное «путь/скорость» занижает время в разы.
+BORMASH_ACCEL = {
+    "c_deg_s2": 100.0,      # [AXIS_C] MAX_ACCELERATION
+    "b_deg_s2": 100.0,      # [AXIS_B] MAX_ACCELERATION
+    "linear_mm_s2": 1000.0,  # [AXIS_X]/[AXIS_Y]/[AXIS_Z] MAX_ACCELERATION
+}
+
+
+def motion_time_with_accel_s(distance: float, velocity: float, acceleration: float) -> float:
+    """Время одного движения с трапецеидальным профилем скорости, с.
+
+    Пока путь длиннее разгонного (s >= v²/a), профиль трапецеидальный и разгон
+    добавляет ровно v/a к идеальному s/v. Если путь короче, до заданной скорости
+    ось не успевает разогнаться: профиль треугольный, t = 2*sqrt(s/a). Именно этот
+    случай даёт кратную ошибку на кольцах малого радиуса.
+    """
+    d = abs(float(distance))
+    v = float(velocity)
+    a = float(acceleration)
+    if d <= 0.0 or v <= 0.0:
+        return 0.0
+    if a <= 0.0:
+        return d / v          # ускорение не задано — остаётся идеальный профиль
+    if d >= v * v / a:
+        return d / v + v / a  # трапеция: выход на скорость и торможение
+    return 2.0 * math.sqrt(d / a)  # треугольник: заданная скорость не достигается
 
 
 def is_bormash_profile(settings: Any) -> bool:
@@ -82,7 +112,8 @@ QV_FAIL_HIGH_J_MM3 = 110.0
 
 def wire_area_from_diameter(wire_diameter_mm: float) -> float:
     """Cross-section of the filler wire, mm^2. Grows with the SQUARE of diameter:
-    1.2 -> 1.131, 1.6 -> 2.011, 2.0 -> 3.142, 2.5 -> 4.909 mm^2."""
+    0.8 -> 0.503, 1.2 -> 1.131, 1.6 -> 2.011, 2.0 -> 3.142, 2.4 -> 4.524,
+    3.2 -> 8.042 mm^2 (the six feed rollers the Bormash actually has)."""
     d = max(float(wire_diameter_mm), 1e-9)
     return math.pi * d * d / 4.0
 
@@ -95,7 +126,10 @@ def max_wire_feed_for_beam(wire_diameter_mm: float, current_max_ma: float,
     v4.2.9.31: the limit on thick wire is the beam, not the feeder. The beam can melt
     at most  Q = U*I/QV  mm^3/s; a thicker wire delivers that volume at a proportionally
     LOWER linear feed, so the feed ceiling scales as 1/area:
-        1.2 mm -> ~40 mm/s, 1.6 -> ~22, 2.0 -> ~14, 2.5 -> ~9  (at 40 mA, QV 55).
+        0.8 mm -> ~90 mm/s, 1.2 -> ~40, 1.6 -> ~22, 2.0 -> ~14, 2.4 -> ~10,
+        3.2 -> ~5.6  (at 40 mA, QV 55).
+    On the thinnest roller the beam stops being the binding constraint: ~90 mm/s is far
+    above what the feeder can deliver, so the mechanical limit governs there.
     """
     melt_rate = (float(voltage_kv) * float(current_max_ma)) / max(float(qv_min_j_mm3), 1e-9)
     area = wire_area_from_diameter(wire_diameter_mm)
@@ -150,6 +184,17 @@ MATERIAL_LIBRARY: Dict[str, Dict[str, float | str]] = {
         "field_calibrated": True,
         "note_ru": "Базовый профиль по вашим опытам V16-V21; QV подтверждена наплавками R7/R8."
     },
+    "stainless_steel_08_wire": {
+        "name_ru": "Нержавеющая сталь, проволока 0.8 мм",
+        "density_g_cm3": 7.9,
+        "wire_diameter_mm": 0.8,
+        "energy_bottom_j_mm": 158.0,
+        "energy_top_j_mm": 138.0,
+        "qv_bottom_j_mm3": 72.0,
+        "qv_top_j_mm3": 63.0,
+        "field_calibrated": False,
+        "note_ru": "Самый тонкий ролик станка. Сечение в 2.25 раза меньше, чем у 1.2 мм: тот же расход металла требует вдвое большей подачи, и ограничением становится механизм подачи, а не луч. QV не подтверждена — ТРЕБУЕТСЯ калибровочный валик."
+    },
     # v4.2.9.31: thicker stainless wires. QV is a volumetric quantity and does not
     # depend on wire diameter directly, so the field-proven 72/63 J/mm^3 is used as a
     # STARTING POINT. Everything that DOES depend on diameter (wire cross-section,
@@ -178,16 +223,27 @@ MATERIAL_LIBRARY: Dict[str, Dict[str, float | str]] = {
         "field_calibrated": False,
         "note_ru": "Сечение в 2.78 раза больше, чем у 1.2 мм. Тот же расход металла достигается втрое меньшей подачей. QV не подтверждена — ТРЕБУЕТСЯ калибровочный валик."
     },
-    "stainless_steel_25_wire": {
-        "name_ru": "Нержавеющая сталь, проволока 2.5 мм",
+    "stainless_steel_24_wire": {
+        "name_ru": "Нержавеющая сталь, проволока 2.4 мм",
         "density_g_cm3": 7.9,
-        "wire_diameter_mm": 2.5,
+        "wire_diameter_mm": 2.4,
         "energy_bottom_j_mm": 158.0,
         "energy_top_j_mm": 138.0,
         "qv_bottom_j_mm3": 72.0,
         "qv_top_j_mm3": 63.0,
         "field_calibrated": False,
-        "note_ru": "Сечение в 4.34 раза больше, чем у 1.2 мм. Требует заметно большей мощности луча на тот же метраж проволоки. QV не подтверждена — ТРЕБУЕТСЯ калибровочный валик."
+        "note_ru": "Сечение ровно в 4 раза больше, чем у 1.2 мм. Требует заметно большей мощности луча на тот же метраж проволоки. QV не подтверждена — ТРЕБУЕТСЯ калибровочный валик."
+    },
+    "stainless_steel_32_wire": {
+        "name_ru": "Нержавеющая сталь, проволока 3.2 мм",
+        "density_g_cm3": 7.9,
+        "wire_diameter_mm": 3.2,
+        "energy_bottom_j_mm": 158.0,
+        "energy_top_j_mm": 138.0,
+        "qv_bottom_j_mm3": 72.0,
+        "qv_top_j_mm3": 63.0,
+        "field_calibrated": False,
+        "note_ru": "Самый толстый ролик станка. Сечение в 7.1 раза больше, чем у 1.2 мм: при 40 мА луч плавит не более ~5.6 мм/с подачи. QV не подтверждена — ТРЕБУЕТСЯ калибровочный валик."
     },
     "steel_generic": {
         "name_ru": "Сталь, общий стартовый профиль",
@@ -220,6 +276,57 @@ MATERIAL_LIBRARY: Dict[str, Dict[str, float | str]] = {
         "note_ru": "Высокий риск испарения/брызг; только после короткого теста."
     },
 }
+
+
+# Ролики подачи, физически имеющиеся на «Бормаше» (ebam.ini, [ROLLER_SCALE]:
+# DIAM_08/12/16/20/24/32). Проволоки Ø2.5 мм на станке нет и никогда не было —
+# профиль под неё existed по ошибке.
+BORMASH_WIRE_ROLLERS_MM = (0.8, 1.2, 1.6, 2.0, 2.4, 3.2)
+
+# Ключи, исчезнувшие из библиотеки. Молча подставить дефолт нельзя: пользователь
+# получил бы 1.2 мм вместо выбранной толстой проволоки и, как следствие, втрое
+# завышенную подачу. Поэтому переносим на ближайший реальный ролик и сообщаем.
+LEGACY_MATERIAL_KEYS: Dict[str, str] = {
+    "stainless_steel_25_wire": "stainless_steel_24_wire",
+}
+
+
+def wire_roller_note(wire_diameter_mm: float, tol_mm: float = 0.02) -> Optional[str]:
+    """Предупредить, если заданный диаметр не совпадает ни с одним роликом станка.
+
+    Это именно предупреждение, а не блокировка: набор роликов задаётся в ebam.ini и
+    может отличаться на другой машине — решение остаётся за оператором.
+    """
+    d = float(wire_diameter_mm)
+    if any(abs(d - r) <= tol_mm for r in BORMASH_WIRE_ROLLERS_MM):
+        return None
+    nearest = min(BORMASH_WIRE_ROLLERS_MM, key=lambda r: abs(r - d))
+    return (
+        f"Диаметр {d:g} мм не совпадает ни с одним роликом «Бормаша» "
+        f"({', '.join(f'{r:g}' for r in BORMASH_WIRE_ROLLERS_MM)} мм). "
+        f"Ближайший — {nearest:g} мм. Проверьте, какой ролик реально стоит: "
+        "сечение проволоки входит в QV квадратом диаметра."
+    )
+
+
+def resolve_material_key(material_key: str) -> Tuple[str, Optional[str]]:
+    """Вернуть действующий ключ профиля и, при замене, пояснение для оператора."""
+    key = str(material_key)
+    if key in MATERIAL_LIBRARY:
+        return key, None
+    if key in LEGACY_MATERIAL_KEYS:
+        new_key = LEGACY_MATERIAL_KEYS[key]
+        old_d = 2.5 if key == "stainless_steel_25_wire" else 0.0
+        new_d = float(MATERIAL_LIBRARY[new_key].get("wire_diameter_mm", 0.0))
+        return new_key, (
+            f"Профиль «{key}» (Ø{old_d:g} мм) заменён на «{new_key}» (Ø{new_d:g} мм): "
+            f"ролика Ø{old_d:g} мм на станке нет, есть {', '.join(f'{d:g}' for d in BORMASH_WIRE_ROLLERS_MM)} мм. "
+            "Проверьте подачу и QV — сечение проволоки изменилось."
+        )
+    return "stainless_steel_12_wire", (
+        f"Профиль «{key}» не найден, взят базовый «stainless_steel_12_wire» (Ø1.2 мм). "
+        "Проверьте выбор материала перед генерацией."
+    )
 
 
 @dataclass
@@ -436,6 +543,18 @@ class ProcessSettings:
     # M67 is enabled only after the operator confirms HAL support.
     analog_output_mode: str = "m68_compatible"  # m68_compatible / m67_synchronized
     machine_m67_confirmed: bool = False
+    # E4 = номер слоя. Пульт «Бормаша» документирует канал (M68 E4 Qxx - layer
+    # number), но в присланной конфигурации motion.analog-out-04 ни к чему не
+    # подключён, поэтому по умолчанию выключено: запись безвредна, но и бесполезна,
+    # пока в HAL не появится связь с учётом ресурса (компонент layerpower).
+    # Всегда M68: номер слоя не технологическая величина, синхронизация с движением
+    # не нужна, а M67 требует непройденного HAL-кита.
+    emit_layer_number_e4: bool = False
+    # Оценка времени с учётом разгона/торможения осей (ускорения из ebam.ini).
+    # Выключение возвращает прежнюю идеальную оценку «путь/скорость».
+    estimate_time_with_acceleration: bool = True
+    accel_c_deg_s2: float = 100.0
+    accel_linear_mm_s2: float = 1000.0
     # No-pause fixed-X modes are only geometrically valid for near-constant radius walls.
     rotary_c_radius_variation_tolerance_mm: float = 0.05
     safe_z_final_mm: float = 110.0
@@ -484,6 +603,10 @@ class LayerInfo:
     commanded_e2_mm_s: Optional[float] = None
     analog_command_mode: str = "not_recorded"
     analog_command_update: bool = False
+    # Радиус кольца на поворотном столе. Нужен оценщику времени: линейное ускорение
+    # точки на радиусе R равно a_C * pi * R / 180, поэтому на малых радиусах разгон
+    # стола ограничивает время сильнее, чем заданная скорость.
+    rotary_radius_mm: Optional[float] = None
 
 
 @dataclass
@@ -1096,6 +1219,7 @@ def _generate_mesh_rotary_c(mesh_n: trimesh.Trimesh, stats: Dict[str, Any], sett
             continue
         max_rings_layer = max(max_rings_layer, len(radii))
         lines.append(f"(--- LAYER {idx}/{n_layers} Z={_fmt(z,3)} STL_ROTARY_C rings={len(radii)} outerR={_fmt(rstats.get('outer_radius_mm',0.0),3)} innerR={_fmt(rstats.get('inner_radius_mm',0.0),3)} ---)")
+        lines.extend(_layer_number_lines(effective_settings, idx, n_layers))
         for j, radius in enumerate(radii, start=1):
             base = layer_parameters(z, height, effective_settings)
             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
@@ -1121,6 +1245,7 @@ def _generate_mesh_rotary_c(mesh_n: trimesh.Trimesh, stats: Dict[str, Any], sett
             layer.segments_count = 1
             layer.contour_segments_count = 0
             layer.path_length_mm = 2.0 * math.pi * float(radius)
+            layer.rotary_radius_mm = float(radius)
             layer.contour_length_mm = 0.0
             lines.extend(_rotary_c_pass_gcode(radius, layer, effective_settings, j, len(radii), c_feed))
             layer_infos.append(layer)
@@ -1131,7 +1256,7 @@ def _generate_mesh_rotary_c(mesh_n: trimesh.Trimesh, stats: Dict[str, Any], sett
             max_c_used = max(max_c_used, c_feed)
         if layer_infos and layer_infos[-1].layer_pause_s > 0:
             lines.append(f"G4 P{_fmt(layer_infos[-1].layer_pause_s,3)} (layer thermal stabilization)")
-        _tdw = _thermal_dwell_for_layer(effective_settings, sum(li.path_length_mm / max(li.travel_speed_mm_s, 1e-9) for li in layer_infos[-len(radii):]))
+        _tdw = _thermal_dwell_for_layer(effective_settings, layers_active_time_s(layer_infos[-len(radii):], effective_settings))
         if _tdw > 0:
             lines.append(f"G4 P{_fmt(_tdw,1)} (THERMAL_DWELL L{idx}: adaptive - layer cycle below minimum)")
             thermal_dwell_count += 1
@@ -1193,8 +1318,8 @@ def _generate_mesh_rotary_c(mesh_n: trimesh.Trimesh, stats: Dict[str, Any], sett
         "max_segments_per_layer": max_rings_layer,
         "active_path_length_mm": total_active_len,
         "active_path_length_m": total_active_len / 1000.0,
-        "estimated_active_time_s": sum(li.path_length_mm / max(li.travel_speed_mm_s, 1e-9) for li in layer_infos),
-        "estimated_wire_length_mm": sum((li.path_length_mm / max(li.travel_speed_mm_s, 1e-9)) * li.wire_mm_s for li in layer_infos),
+        "estimated_active_time_s": layers_active_time_s(layer_infos, effective_settings),
+        "estimated_wire_length_mm": sum(layer_active_time_s(li, effective_settings) * li.wire_mm_s for li in layer_infos),
         "wire_min_calculated_mm_s": min((li.wire_mm_s for li in layer_infos), default=0.0),
         "wire_max_calculated_mm_s": max((li.wire_mm_s for li in layer_infos), default=0.0),
         "feed_min_mm_min": min((li.feed_mm_min for li in layer_infos), default=0.0),
@@ -1902,6 +2027,7 @@ def _generate_rotational_shell_rotary_c_no_pause(params: Dict[str, Any], setting
         ring_len = 2.0 * math.pi * float(radius)
         trans_len = (abs(transition_deg) / 360.0) * ring_len if idx < n_layers else 0.0
         layer.path_length_mm = ring_len + trans_len
+        layer.rotary_radius_mm = float(radius)
         layer.contour_length_mm = 0.0
         layer_infos.append(layer)
         radii_used.append(float(radius))
@@ -1946,6 +2072,7 @@ def _generate_rotational_shell_rotary_c_no_pause(params: Dict[str, Any], setting
     lines.append(f"(ANALOG_OUTPUT_MODE: requested={getattr(effective_settings, 'analog_output_mode', 'm68_compatible')}; effective={analog_code}; HAL_M67_confirmed={bool(getattr(effective_settings, 'machine_m67_confirmed', False))})")
 
     last_output_pair = None
+    last_layer_number = None
     if not zone_updates:
         # Keep the one-time start commands outside the continuous G91 motion block.
         # With M67 they remain queued until the first following G1 motion.
@@ -1976,6 +2103,11 @@ def _generate_rotational_shell_rotary_c_no_pause(params: Dict[str, Any], setting
         layer.analog_command_mode = f"{analog_code.lower()}_{'zone' if zone_updates else 'once_average'}"
         layer.analog_command_update = bool(command_changed)
 
+        if layer.index != last_layer_number:
+            # В непрерывном режиме кольца идут подряд: номер слоя выдаём один раз
+            # на слой, а не на каждое кольцо, иначе строка дублируется тысячи раз.
+            lines.extend(_layer_number_lines(effective_settings, layer.index, 0))
+            last_layer_number = layer.index
         lines.append(f"(FIXED_Z_NO_PAUSE_RING L{layer.index}/{len(layer_infos)} Z={_fmt(layer.z,3)} R={_fmt(radius,3)} linearF={_fmt(layer.feed_mm_min,1)}mm/min Cfeed={_fmt(c_feed,1)}deg/min E0cmd={_fmt(commanded_current,3)}mA E2cmd={_fmt(commanded_wire,3)}mm/s{zone_txt})")
         lines.append(f"G1 C{_fmt(turn,3)} F{_fmt(c_feed,1)}")
         if i < len(layer_infos) - 1:
@@ -2032,8 +2164,8 @@ def _generate_rotational_shell_rotary_c_no_pause(params: Dict[str, Any], setting
         "contour_segments_total": 0,
         "active_path_length_mm": total_active_len,
         "active_path_length_m": total_active_len / 1000.0,
-        "estimated_active_time_s": sum(li.path_length_mm / max(li.travel_speed_mm_s, 1e-9) for li in layer_infos),
-        "estimated_wire_length_mm": sum((li.path_length_mm / max(li.travel_speed_mm_s, 1e-9)) * li.wire_mm_s for li in layer_infos),
+        "estimated_active_time_s": layers_active_time_s(layer_infos, effective_settings),
+        "estimated_wire_length_mm": sum(layer_active_time_s(li, effective_settings) * li.wire_mm_s for li in layer_infos),
         "wire_feed_mode": str(getattr(effective_settings, "wire_feed_mode", "auto")),
         "wire_min_calculated_mm_s": min((li.wire_mm_s for li in layer_infos), default=0.0),
         "wire_max_calculated_mm_s": max((li.wire_mm_s for li in layer_infos), default=0.0),
@@ -2165,6 +2297,7 @@ def _generate_rotational_shell_rotary_c(params: Dict[str, Any], settings: Proces
             continue
         max_rings_layer = max(max_rings_layer, len(radii))
         lines.append(f"(--- LAYER {idx}/{n_layers} Z={_fmt(z,3)} ROTARY_C rings={len(radii)} ---)")
+        lines.extend(_layer_number_lines(effective_settings, idx, n_layers))
         for j, radius in enumerate(radii, start=1):
             base = layer_parameters(z, height, effective_settings)
             required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
@@ -2190,6 +2323,7 @@ def _generate_rotational_shell_rotary_c(params: Dict[str, Any], settings: Proces
             layer.segments_count = 1
             layer.contour_segments_count = 0
             layer.path_length_mm = 2.0 * math.pi * float(radius)
+            layer.rotary_radius_mm = float(radius)
             layer.contour_length_mm = 0.0
             lines.extend(_rotary_c_pass_gcode(radius, layer, effective_settings, j, len(radii), c_feed))
             layer_infos.append(layer)
@@ -2200,7 +2334,7 @@ def _generate_rotational_shell_rotary_c(params: Dict[str, Any], settings: Proces
             max_c_used = max(max_c_used, c_feed)
         if layer_infos and layer_infos[-1].layer_pause_s > 0:
             lines.append(f"G4 P{_fmt(layer_infos[-1].layer_pause_s,3)} (layer thermal stabilization)")
-        _tdw = _thermal_dwell_for_layer(effective_settings, sum(li.path_length_mm / max(li.travel_speed_mm_s, 1e-9) for li in layer_infos[-len(radii):]))
+        _tdw = _thermal_dwell_for_layer(effective_settings, layers_active_time_s(layer_infos[-len(radii):], effective_settings))
         if _tdw > 0:
             lines.append(f"G4 P{_fmt(_tdw,1)} (THERMAL_DWELL L{idx}: adaptive - layer cycle below minimum)")
             thermal_dwell_count += 1
@@ -2254,8 +2388,8 @@ def _generate_rotational_shell_rotary_c(params: Dict[str, Any], settings: Proces
         "max_segments_per_layer": max_rings_layer,
         "active_path_length_mm": total_active_len,
         "active_path_length_m": total_active_len / 1000.0,
-        "estimated_active_time_s": sum(li.path_length_mm / max(li.travel_speed_mm_s, 1e-9) for li in layer_infos),
-        "estimated_wire_length_mm": sum((li.path_length_mm / max(li.travel_speed_mm_s, 1e-9)) * li.wire_mm_s for li in layer_infos),
+        "estimated_active_time_s": layers_active_time_s(layer_infos, effective_settings),
+        "estimated_wire_length_mm": sum(layer_active_time_s(li, effective_settings) * li.wire_mm_s for li in layer_infos),
         "wire_min_calculated_mm_s": min((li.wire_mm_s for li in layer_infos), default=0.0),
         "wire_max_calculated_mm_s": max((li.wire_mm_s for li in layer_infos), default=0.0),
         "feed_min_mm_min": min((li.feed_mm_min for li in layer_infos), default=0.0),
@@ -2350,6 +2484,7 @@ def _generate_rotational_shell_ring_spiral(params: Dict[str, Any], settings: Pro
         max_segments_layer = max(max_segments_layer, len(segs))
         path_len = sum(math.hypot(s[2]-s[0], s[3]-s[1]) for s in segs)
         lines.append(f"(--- LAYER {idx}/{n_layers} Z={_fmt(layer.z,3)} ROTATIONAL_{strategy.upper()} I={_fmt(layer.current_ma,3)} F={_fmt(layer.feed_mm_min,1)} WIRE={_fmt(layer.wire_mm_s,3)} SEG={len(segs)} ---)")
+        lines.extend(_layer_number_lines(effective_settings, idx, n_layers))
         lines.extend(_continuous_layer_gcode(segs, layer, effective_settings, {}, f"rot_{strategy}"))
         if layer.layer_pause_s > 0:
             lines.append(f"G4 P{_fmt(layer.layer_pause_s,3)} (layer thermal stabilization)")
@@ -2388,8 +2523,8 @@ def _generate_rotational_shell_ring_spiral(params: Dict[str, Any], settings: Pro
         "max_segments_per_layer": max_segments_layer,
         "active_path_length_mm": total_active_len,
         "active_path_length_m": total_active_len / 1000.0,
-        "estimated_active_time_s": sum(li.path_length_mm / max(li.travel_speed_mm_s, 1e-9) for li in layer_infos),
-        "estimated_wire_length_mm": sum((li.path_length_mm / max(li.travel_speed_mm_s, 1e-9)) * li.wire_mm_s for li in layer_infos),
+        "estimated_active_time_s": layers_active_time_s(layer_infos, effective_settings),
+        "estimated_wire_length_mm": sum(layer_active_time_s(li, effective_settings) * li.wire_mm_s for li in layer_infos),
         "wire_min_calculated_mm_s": min((li.wire_mm_s for li in layer_infos), default=0.0),
         "wire_max_calculated_mm_s": max((li.wire_mm_s for li in layer_infos), default=0.0),
         "feed_min_mm_min": min((li.feed_mm_min for li in layer_infos), default=0.0),
@@ -3268,6 +3403,55 @@ def _deposition_analog_code(settings: ProcessSettings) -> str:
     return "M68"
 
 
+def _effective_linear_accel_mm_s2(li: "LayerInfo", settings: ProcessSettings) -> float:
+    """Линейное ускорение, доступное на данном участке, мм/с².
+
+    Для кольца на поворотном столе точка детали разгоняется углом: линейное
+    ускорение равно a_C * pi * R / 180 и падает вместе с радиусом. Для обычных
+    X/Y-дорожек берётся линейное ускорение осей.
+    """
+    r = getattr(li, "rotary_radius_mm", None)
+    if r is None:
+        return max(float(getattr(settings, "accel_linear_mm_s2", 1000.0)), 0.0)
+    a_c = max(float(getattr(settings, "accel_c_deg_s2", 100.0)), 0.0)
+    return a_c * math.pi * max(float(r), 0.0) / 180.0
+
+
+def layer_active_time_s(li: "LayerInfo", settings: ProcessSettings, include_contour: bool = False) -> float:
+    """Активное время участка (дорожки/кольца) с учётом разгона и торможения.
+
+    include_contour добавляет обход контура на своей подаче — так считает только
+    базовый XY-генератор; кольцевые стратегии контур отдельно не ведут.
+    """
+    v = max(float(li.travel_speed_mm_s), 1e-9)
+    v_contour = max(v * max(float(getattr(settings, "contour_feed_factor", 1.0)), 1e-9), 1e-9)
+    if not bool(getattr(settings, "estimate_time_with_acceleration", True)):
+        t = float(li.path_length_mm) / v
+        return t + float(li.contour_length_mm) / v_contour if include_contour else t
+    a = _effective_linear_accel_mm_s2(li, settings)
+    t = motion_time_with_accel_s(float(li.path_length_mm), v, a)
+    if include_contour:
+        t += motion_time_with_accel_s(float(li.contour_length_mm), v_contour, a)
+    return t
+
+
+def layers_active_time_s(layer_infos: Iterable["LayerInfo"], settings: ProcessSettings) -> float:
+    """Суммарное активное время по списку участков."""
+    return sum(layer_active_time_s(li, settings) for li in layer_infos)
+
+
+def _layer_number_lines(settings: ProcessSettings, layer_index: int, layers_total: int = 0) -> List[str]:
+    """Строка M68 E4 с номером слоя — если канал включён в настройках.
+
+    Отдаётся списком, чтобы вызов оставался однострочным (`lines.extend(...)`) и в
+    выключенном состоянии не менял вывод ни одного генератора.
+    """
+    if not bool(getattr(settings, "emit_layer_number_e4", False)):
+        return []
+    total = f"/{int(layers_total)}" if layers_total else ""
+    return [f"M68 E4 Q{_fmt(float(int(layer_index)),3)} (layer number {int(layer_index)}{total})"]
+
+
 def _analog_setpoint_line(settings: ProcessSettings, channel: int, value: float, comment: str = "") -> str:
     code = _deposition_analog_code(settings)
     suffix = f" ({comment})" if comment else ""
@@ -4105,6 +4289,7 @@ def _generate_special_paths_from_polygon_provider(
                 warnings.append(f"Layer {idx}: no C-radii at Z={zsec:.3f}; skipped")
                 continue
             lines.append(f"(--- LAYER {idx}/{n_layers} Z={_fmt(z,3)} {source_label.upper()}_ROTARY_C rings={len(radii)} outerR={_fmt(rstats.get('outer_radius_mm',0.0),3)} innerR={_fmt(rstats.get('inner_radius_mm',0.0),3)} ---)")
+            lines.extend(_layer_number_lines(effective_settings, idx, n_layers))
             for j, radius in enumerate(radii, start=1):
                 base = layer_parameters(z, height, effective_settings)
                 required_c = rotary_c_speed_deg_min(base.feed_mm_min, radius)
@@ -4128,6 +4313,7 @@ def _generate_special_paths_from_polygon_provider(
                 layer.index = idx
                 layer.segments_count = 1
                 layer.path_length_mm = 2.0 * math.pi * float(radius)
+                layer.rotary_radius_mm = float(radius)
                 lines.extend(_rotary_c_pass_gcode(radius, layer, effective_settings, j, len(radii), c_feed))
                 layer_infos.append(layer)
                 total_active_len += layer.path_length_mm
@@ -4138,7 +4324,7 @@ def _generate_special_paths_from_polygon_provider(
                 max_c_used = max(max_c_used, c_feed)
             if layer_infos and layer_infos[-1].layer_pause_s > 0:
                 lines.append(f"G4 P{_fmt(layer_infos[-1].layer_pause_s,3)} (layer thermal stabilization)")
-            _tdw = _thermal_dwell_for_layer(effective_settings, sum(li.path_length_mm / max(li.travel_speed_mm_s, 1e-9) for li in layer_infos[-len(radii):]))
+            _tdw = _thermal_dwell_for_layer(effective_settings, layers_active_time_s(layer_infos[-len(radii):], effective_settings))
             if _tdw > 0:
                 lines.append(f"G4 P{_fmt(_tdw,1)} (THERMAL_DWELL L{idx}: adaptive - layer cycle below minimum)")
                 thermal_dwell_count += 1
@@ -4159,6 +4345,7 @@ def _generate_special_paths_from_polygon_provider(
             layer.segments_count = len(segs)
             layer.path_length_mm = path_len
             lines.append(f"(--- LAYER {idx}/{n_layers} Z={_fmt(layer.z,3)} XY_{strategy.upper()} I={_fmt(layer.current_ma,3)} F={_fmt(layer.feed_mm_min,1)} WIRE={_fmt(layer.wire_mm_s,3)} SEG={len(segs)} ---)")
+            lines.extend(_layer_number_lines(effective_settings, idx, n_layers))
             lines.extend(_continuous_layer_gcode(segs, layer, effective_settings, {}, f"xy_{strategy}"))
             if layer.layer_pause_s > 0:
                 lines.append(f"G4 P{_fmt(layer.layer_pause_s,3)} (layer thermal stabilization)")
@@ -4208,8 +4395,8 @@ def _generate_special_paths_from_polygon_provider(
         "max_segments_per_layer": max_segments_layer,
         "active_path_length_mm": total_active_len,
         "active_path_length_m": total_active_len / 1000.0,
-        "estimated_active_time_s": sum(li.path_length_mm / max(li.travel_speed_mm_s, 1e-9) for li in layer_infos),
-        "estimated_wire_length_mm": sum((li.path_length_mm / max(li.travel_speed_mm_s, 1e-9)) * li.wire_mm_s for li in layer_infos),
+        "estimated_active_time_s": layers_active_time_s(layer_infos, effective_settings),
+        "estimated_wire_length_mm": sum(layer_active_time_s(li, effective_settings) * li.wire_mm_s for li in layer_infos),
         "wire_min_calculated_mm_s": min((li.wire_mm_s for li in layer_infos), default=0.0),
         "wire_max_calculated_mm_s": max((li.wire_mm_s for li in layer_infos), default=0.0),
         "feed_min_mm_min": min((li.feed_mm_min for li in layer_infos), default=0.0),
@@ -4403,6 +4590,7 @@ def _generate_with_polygon_provider(provider: Callable[[float], List[Polygon]], 
             continue
 
         lines.append(f"(--- LAYER {idx}/{n_layers} Z={_fmt(layer.z,3)} I={_fmt(layer.current_ma,3)} F={_fmt(layer.feed_mm_min,1)}mm/min WIRE={_fmt(layer.wire_mm_s,3)}mm/s HATCH={len(segs)} CONTOUR={len(conts)} ---)")
+        lines.extend(_layer_number_lines(settings, idx, n_layers))
         path_len = 0.0
         contour_len = 0.0
         factors = _edge_compensation_factors(segs, layer_settings, layer) if segs else {}
@@ -4479,7 +4667,7 @@ def _generate_with_polygon_provider(provider: Callable[[float], List[Polygon]], 
         "max_segments_per_layer": max_segments_layer,
         "active_path_length_mm": total_active_len,
         "active_path_length_m": total_active_len / 1000.0,
-        "estimated_active_time_s": sum(((li.path_length_mm / max(li.travel_speed_mm_s, 1e-9)) + (li.contour_length_mm / max(li.travel_speed_mm_s * max(settings.contour_feed_factor, 1e-9), 1e-9))) for li in layer_infos),
+        "estimated_active_time_s": sum(layer_active_time_s(li, settings, include_contour=True) for li in layer_infos),
         "estimated_wire_length_mm": sum(((li.path_length_mm / max(li.travel_speed_mm_s,1e-9)) * li.wire_mm_s) + ((li.contour_length_mm / max(li.travel_speed_mm_s * max(settings.contour_feed_factor, 1e-9),1e-9)) * li.wire_mm_s * settings.contour_wire_factor) for li in layer_infos),
         "wire_min_calculated_mm_s": min((li.wire_mm_s for li in layer_infos), default=0.0),
         "wire_max_calculated_mm_s": max((li.wire_mm_s for li in layer_infos), default=0.0),
@@ -5726,7 +5914,8 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 def recommend_settings_from_summary(summary: Dict[str, float], mode: str = "balanced", material_key: str = "stainless_steel_12_wire") -> ProcessSettings:
     m = mode.lower()
     s = ProcessSettings()
-    mat = MATERIAL_LIBRARY.get(material_key, MATERIAL_LIBRARY["stainless_steel_12_wire"])
+    resolved_key, _migration_note = resolve_material_key(material_key)
+    mat = MATERIAL_LIBRARY[resolved_key]
     s.density_g_cm3 = float(mat.get("density_g_cm3", s.density_g_cm3))
     s.wire_diameter_mm = float(mat.get("wire_diameter_mm", s.wire_diameter_mm))
     base_e0 = float(mat.get("energy_bottom_j_mm", s.target_energy_bottom_j_per_mm))
