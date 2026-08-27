@@ -1,0 +1,17 @@
+diff --git a/app/ebam_gcode_studio/gcode_tools.py b/app/ebam_gcode_studio/gcode_tools.py
+index a821b5f..f1d368f 100644
+--- a/app/ebam_gcode_studio/gcode_tools.py
++++ b/app/ebam_gcode_studio/gcode_tools.py
+@@ -168,7 +168,11 @@ def post_generation_check(gcode: str,
+     # Only meaningful on real programs; a handful of moves is not a motion problem.
+     add("Плотность уставок E0/E2", "warn" if (_ratio > 0.6 and _g1 >= 50) else "ok",
+         f"{_m68} команд на {_g1} движений ({_ratio:.2f}/ход)",
+-        "почти на каждом ходу — планировщик рвёт сглаживание G64" if _ratio > 0.6 else "приемлемо")
++        ("почти на каждом ходу — планировщик рвёт сглаживание G64. Включите «Упростить рампу "
++         "проволоки»: она убирает промежуточные уставки внутри дорожки. Полностью снимает "
++         "проблему только переход на M67 после HAL-кита — он синхронизируется с движением и "
++         "очередь не рвёт. Часть уставок на перемычках убрать нельзя: там подача выключается "
++         "физически") if _ratio > 0.6 else "приемлемо")
+ 
+     order = {"bad": 0, "warn": 1, "ok": 2}
+     overall = min((it["status"] for it in items), key=lambda s: order[s]) if items else "warn"

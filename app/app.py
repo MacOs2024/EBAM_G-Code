@@ -349,13 +349,19 @@ def _fmt_hm(seconds: float) -> str:
     return f"{h} ч {m:02d} мин"
 
 
-def _estimate_time_before_generation(summary, settings: ProcessSettings):
+def _estimate_time_before_generation(summary, settings: ProcessSettings, rot_params=None):
     """Fast strategy-aware timing estimate before full G-code generation.
 
     Active deposition time is mainly metal volume / deposition rate, so several
     strategies can have similar active time. Total time must also include starts,
     Z approaches, W retracts and link/servo overhead; these terms depend strongly
     on trajectory strategy and were the reason old estimates looked unchanged.
+
+    rot_params — геометрия параметрического тела вращения. Когда она передана, путь
+    для XY-колец и XY-спирали считается той же функцией, что и у генератора
+    (`rotational_total_path_length_mm`), а не через объём: объёмная оценка занижала
+    время вдвое на тонкой стенке, потому что генератор всё равно кладёт кольцо
+    шириной в радиальный шаг. Без геометрии остаётся прежняя объёмная оценка.
     """
     height = max(float(summary.get("size_z", 0.0) or 0.0), 1e-9)
     n_layers = int(math.ceil(height / max(settings.layer_height, 1e-9)))
@@ -380,6 +386,7 @@ def _estimate_time_before_generation(summary, settings: ProcessSettings):
     rings_like = path_strategy in ("rings", "xy_rings", "stl_xy_rings", "mesh_xy_rings")
     spiral_like = path_strategy in ("spiral", "xy_spiral", "stl_xy_spiral", "mesh_xy_spiral")
 
+    modeled_path_mm = 0.0
     z_descent_speed_mm_s = max(settings.work_z_feed_mm_min / 60.0, 1e-9)
     z_ascent_speed_mm_s = max(settings.rapid_feed_z_mm_min / 60.0, 1e-9)
     z_pair_s = settings.z_hop_mm / z_descent_speed_mm_s + settings.z_hop_mm / z_ascent_speed_mm_s
@@ -467,6 +474,17 @@ def _estimate_time_before_generation(summary, settings: ProcessSettings):
             physical_passes = n_layers
             link_moves = n_layers * passes_per_layer * points_per_circle * 0.12
             strategy_note = "концентрические XY-кольца: один проход на слой, но много коротких дуговых сегментов"
+        if (rings_like or spiral_like) and rot_params:
+            # Путь берём у той же функции, что и генератор, вместо объёмной оценки:
+            # на тонкой стенке кольцо всё равно кладётся шириной в радиальный шаг,
+            # поэтому объём/сечение занижал время (стенка 2 мм — вдвое).
+            from ebam_gcode_studio.core import rotational_total_path_length_mm as _rot_path
+            _path_mm = _rot_path(rot_params, settings, path_strategy, n_layers)
+            if _path_mm > 0:
+                _avg_v = max((settings.feed_bottom_mm_min + settings.feed_top_mm_min) * 0.5, 1e-9) / 60.0
+                active_s = _path_mm / _avg_v
+                modeled_path_mm = _path_mm
+                strategy_note += "; время по фактической длине траектории, а не по объёму"
     else:
         axis_y = settings.direction.upper().startswith("Y")
         perp = size_x if axis_y else size_y
@@ -499,6 +517,7 @@ def _estimate_time_before_generation(summary, settings: ProcessSettings):
         "strategy_note": strategy_note,
         "total_s": total_s,
         "volume_used_mm3": volume,
+        "modeled_path_mm": modeled_path_mm,
         "is_approximate": True,
     }
 
@@ -930,7 +949,7 @@ def _apply_rotary_c_feed_limit_to_settings(summary: dict, settings: ProcessSetti
     new_settings = replace(settings, feed_bottom_mm_min=float(new_b), feed_top_mm_min=float(new_t))
     return new_settings, _rotary_c_limit_status(summary, new_settings, info)
 
-def _fit_settings_to_target_time(summary, base: ProcessSettings, target_s: float, fit_mode: str, levers: dict | None = None):
+def _fit_settings_to_target_time(summary, base: ProcessSettings, target_s: float, fit_mode: str, levers: dict | None = None, rot_params=None):
     """Return settings adjusted toward target total time and a human-readable plan.
 
     v4.2 logic:
@@ -975,7 +994,7 @@ def _fit_settings_to_target_time(summary, base: ProcessSettings, target_s: float
         out = replace(out, current_max_ma=float(cap_current))
     if allow_cspeed and cap_cspeed is not None:
         out = replace(out, rotary_c_max_deg_min=float(cap_cspeed))
-    base_eta = _estimate_time_before_generation(summary, out)
+    base_eta = _estimate_time_before_generation(summary, out, rot_params)
     plan = {
         "enabled": target_s > 0.0,
         "target_s": target_s,
@@ -1040,7 +1059,7 @@ def _fit_settings_to_target_time(summary, base: ProcessSettings, target_s: float
     energy_min_factor = 0.60
 
     for _ in range(18):
-        eta = _estimate_time_before_generation(summary, out)
+        eta = _estimate_time_before_generation(summary, out, rot_params)
         current_s = max(eta["total_s"], 1.0)
         ratio = current_s / max(target_s, 1.0)  # >1 means we need faster deposition
         if 0.96 <= ratio <= 1.04:
@@ -1102,7 +1121,7 @@ def _fit_settings_to_target_time(summary, base: ProcessSettings, target_s: float
                     out.hatch_spacing = max(out.hatch_spacing * geom_step, hatch_min)
             if full_process:
                 # If still too fast after reducing speed/geometry, add thermal pauses.
-                eta2 = _estimate_time_before_generation(summary, out)
+                eta2 = _estimate_time_before_generation(summary, out, rot_params)
                 if eta2["total_s"] < target_s * 0.96:
                     height = max(float(summary.get("size_z", 0.0) or 0.0), 1e-9)
                     n_layers = max(1, int(math.ceil(height / max(out.layer_height, 1e-9))))
@@ -1116,7 +1135,7 @@ def _fit_settings_to_target_time(summary, base: ProcessSettings, target_s: float
     if allow_step and _rotary_c_like_strategy(out):
         out = replace(out, rotational_radial_step_mm=float(out.hatch_spacing))
 
-    adj_eta = _estimate_time_before_generation(summary, out)
+    adj_eta = _estimate_time_before_generation(summary, out, rot_params)
     plan["adjusted_total_s"] = adj_eta["total_s"]
     err_pct = 100.0 * (adj_eta["total_s"] - target_s) / max(target_s, 1.0)
     plan["error_pct"] = err_pct
@@ -1166,7 +1185,7 @@ def _fit_settings_to_target_time(summary, base: ProcessSettings, target_s: float
 
     fcap0, fcap1 = _current_limited_feed_cap(out)
     max_feed_cap = min(fcap0, fcap1, feed_hard_max)
-    wire_eta = _estimate_time_before_generation(summary, out)
+    wire_eta = _estimate_time_before_generation(summary, out, rot_params)
     max_wire = max(wire_eta["wire_bottom"], wire_eta["wire_top"])
     needed_i0 = out.target_energy_bottom_j_per_mm * out.feed_bottom_mm_min / max(60.0 * out.voltage_kv, 1e-9)
     needed_i1 = out.target_energy_top_j_per_mm * out.feed_top_mm_min / max(60.0 * out.voltage_kv, 1e-9)
@@ -1474,7 +1493,17 @@ def render_rotary_c_controls(key_prefix: str = "rotary_c"):
         simplify_ramps = st.checkbox(
             "Упростить рампу проволоки (меньше M68, плавнее ход)", value=False, key=f"{key_prefix}_simpramp",
             help="M68 в LinuxCNC не синхронизирован с движением: на каждой смене уставки станок тормозит до нуля и рвётся сглаживание G64. По умолчанию на каждую дорожку идут три уставки (мягкий старт, основная, мягкий финиш). С этой галочкой остаётся одна уставка на дорожку — движение ровнее и быстрее, но пропадает плавный вход/выход валика на концах дорожек (возможны наплывы на краях). Радикальное решение — перевести машину на M67 после HAL-кита.")
-        st.session_state["_ramp_settings_active"] = {"simplify_wire_ramps": bool(simplify_ramps)}
+        dedupe_setpoints = st.checkbox(
+            "Не повторять уже установленную уставку", value=True, key=f"{key_prefix}_dedupe",
+            help="Убирает команды M67/M68, которые задают каналу значение, уже стоящее на нём. "
+                 "Каждая такая команда тормозит планировщик и рвёт G64, ничего не меняя физически — "
+                 "последовательность фактических значений E0/E2 остаётся прежней. Особенно заметно, "
+                 "когда мягкий старт отключён (коэффициент 1.0): там до половины всех M68 — пустые повторы. "
+                 "Выключайте только если нужен G-code, дословно повторяющий прежние файлы.")
+        st.session_state["_ramp_settings_active"] = {
+            "simplify_wire_ramps": bool(simplify_ramps),
+            "dedupe_analog_setpoints": bool(dedupe_setpoints),
+        }
         st.markdown("**Тепловая выдержка между слоями (адаптивно)**")
         thermal_dwell_on = st.checkbox(
             "Минимальный цикл слоя (тепловая выдержка)", value=False, key=f"{key_prefix}_thdw",
@@ -1617,7 +1646,7 @@ def show_parameter_effects():
     st.dataframe(pd.DataFrame(rows, columns=["Параметр", "Если увеличить", "Основной риск", "Если уменьшить"]), hide_index=True, width="stretch")
 
 
-def build_settings(summary, mode, material_key, advanced_mode: bool = True):
+def build_settings(summary, mode, material_key, advanced_mode: bool = True, rot_params=None):
     recommended = recommend_settings_from_summary(summary, mode, material_key=material_key)
     path_reco = recommend_path_plan_for_geometry(summary, src_type)
     thermal_note_text = geometry_thermal_note(summary, src_type, recommended)
@@ -1811,7 +1840,7 @@ def build_settings(summary, mode, material_key, advanced_mode: bool = True):
         target_total_s = (int(target_hours) * 3600 + int(target_minutes) * 60) if target_time_enabled else 0
         time_plan = {"enabled": False, "messages": [], "target_s": 0.0, "base_total_s": 0.0, "adjusted_total_s": 0.0, "possible": True, "severity": "ok"}
         if target_time_enabled and target_total_s > 0:
-            settings, time_plan = _fit_settings_to_target_time(summary, settings, float(target_total_s), "full_process")
+            settings, time_plan = _fit_settings_to_target_time(summary, settings, float(target_total_s), "full_process", rot_params=rot_params)
         _cv_apply = st.session_state.get("_cv_settings_active") or {}
         if _cv_apply.get("rotary_c_constant_velocity"):
             settings = replace(settings, **_cv_apply)
@@ -1819,7 +1848,9 @@ def build_settings(summary, mode, material_key, advanced_mode: bool = True):
         if _th_apply.get("thermal_min_layer_cycle_enabled"):
             settings = replace(settings, **_th_apply)
         _rp_apply = st.session_state.get("_ramp_settings_active") or {}
-        if _rp_apply.get("simplify_wire_ramps"):
+        if _rp_apply:
+            # Применяем весь блок: дедупликация уставок управляется отдельно от рампы,
+            # иначе снятая галочка дедупликации не доходила бы до генератора.
             settings = replace(settings, **_rp_apply)
         settings, c_limit_info = _apply_rotary_c_feed_limit_to_settings(summary, settings)
         if c_limit_info:
@@ -2282,7 +2313,7 @@ def build_settings(summary, mode, material_key, advanced_mode: bool = True):
     )
     time_plan = {"enabled": False, "messages": [], "target_s": 0.0, "base_total_s": 0.0, "adjusted_total_s": 0.0, "possible": True, "severity": "ok"}
     if target_time_enabled and target_total_s > 0:
-        settings, time_plan = _fit_settings_to_target_time(summary, settings, float(target_total_s), target_fit_mode, time_levers)
+        settings, time_plan = _fit_settings_to_target_time(summary, settings, float(target_total_s), target_fit_mode, time_levers, rot_params=rot_params)
     _cv_apply = st.session_state.get("_cv_settings_active") or {}
     if _cv_apply.get("rotary_c_constant_velocity"):
         settings = replace(settings, **_cv_apply)
@@ -2290,7 +2321,7 @@ def build_settings(summary, mode, material_key, advanced_mode: bool = True):
     if _th_apply.get("thermal_min_layer_cycle_enabled"):
         settings = replace(settings, **_th_apply)
     _rp_apply = st.session_state.get("_ramp_settings_active") or {}
-    if _rp_apply.get("simplify_wire_ramps"):
+    if _rp_apply:
         settings = replace(settings, **_rp_apply)
     settings, c_limit_info = _apply_rotary_c_feed_limit_to_settings(summary, settings)
     if c_limit_info:
@@ -3147,7 +3178,7 @@ if src_type == "Чаши/баллоны":
         }
         st.caption("Рекомендация: для первой демонстрации — высота 80–120 мм, диаметр 100–150 мм, стенка 4–6 мм, TEST до Z10–20 мм.")
     base_summary = rotational_shell_summary(rotational_params)
-    settings, time_plan = build_settings(base_summary, mode, material_key, advanced_mode=advanced_mode)
+    settings, time_plan = build_settings(base_summary, mode, material_key, advanced_mode=advanced_mode, rot_params=rotational_params)
     summary = rotational_shell_summary(rotational_params)
     source_info = "Чаши/баллоны: " + vessel_ru
     height_2d = float(summary["size_z"])
@@ -3221,7 +3252,7 @@ elif src_type == "Стандартная фигура":
     except Exception as exc:
         st.error(f"Не удалось построить стандартную фигуру: {exc}")
         st.stop()
-    settings, time_plan = build_settings(base_summary, mode, material_key, advanced_mode=advanced_mode)
+    settings, time_plan = build_settings(base_summary, mode, material_key, advanced_mode=advanced_mode, rot_params=rotational_params)
     try:
         from shapely.affinity import translate
         if not settings.center_xy:
@@ -3287,7 +3318,7 @@ elif src_type == "STL 3D":
     except Exception as exc:
         st.error(f"Не удалось прочитать/ориентировать STL: {exc}")
         st.stop()
-    settings, time_plan = build_settings(base_summary, mode, material_key, advanced_mode=advanced_mode)
+    settings, time_plan = build_settings(base_summary, mode, material_key, advanced_mode=advanced_mode, rot_params=rotational_params)
     settings.axis_order = axis_order
     settings.rotate_x_deg = rotate_x
     settings.rotate_y_deg = rotate_y
@@ -3317,7 +3348,7 @@ elif src_type == "DXF 2D + высота":
     except Exception as exc:
         st.error(f"Не удалось прочитать DXF: {exc}")
         st.stop()
-    settings, time_plan = build_settings(base_summary, mode, material_key, advanced_mode=advanced_mode)
+    settings, time_plan = build_settings(base_summary, mode, material_key, advanced_mode=advanced_mode, rot_params=rotational_params)
     # normalize is done inside generate_from_polygons; for preview shift here similarly not necessary if user selected center later
     try:
         from shapely.affinity import translate
@@ -3349,7 +3380,7 @@ else:
         st.error(f"Не удалось прочитать CSV как контур X,Y: {exc}")
         st.info("Если вы загрузили файл *_layers.csv, это отчёт по слоям после генерации. Он не содержит контура детали. Для новой генерации используйте исходный STL/DXF/CSV X,Y или settings.json во вкладке JSON.")
         st.stop()
-    settings, time_plan = build_settings(base_summary, mode, material_key, advanced_mode=advanced_mode)
+    settings, time_plan = build_settings(base_summary, mode, material_key, advanced_mode=advanced_mode, rot_params=rotational_params)
     try:
         from shapely.affinity import translate
         if not settings.center_xy:
@@ -3419,7 +3450,7 @@ with tabs[0]:
         evol_target_top = target_j_top / max(settings.layer_height * settings.hatch_spacing, 1e-9)
         evol_actual_bottom = actual_j_bottom / max(settings.layer_height * settings.hatch_spacing, 1e-9)
         evol_actual_top = actual_j_top / max(settings.layer_height * settings.hatch_spacing, 1e-9)
-        eta = _estimate_time_before_generation(summary, settings)
+        eta = _estimate_time_before_generation(summary, settings, rotational_params)
         from ebam_gcode_studio.core import _effective_rotational_radial_step as _err_step
         calc_rows = _build_calc_rows(settings, n_layers, area_wire, recalc, cinfo, eta, _fmt_hm, _err_step)
         calc_df = pd.DataFrame(calc_rows, columns=["Параметр", "Значение"])
