@@ -1,4 +1,4 @@
-"""EBAM G-code Studio core v4.2.9.32.
+"""EBAM G-code Studio core v4.2.9.33.
 
 STL/DXF/CSV -> layer slicing -> EBAM-oriented G-code.
 Designed for Bormash/FABMETALL-style electron-beam wire deposition.
@@ -29,8 +29,8 @@ except Exception as exc:  # pragma: no cover
 Point = Tuple[float, float]
 Segment = Tuple[float, float, float, float]
 
-APP_VERSION = "v4.2.9.32"
-EXPERIENCE_PROFILE_VERSION = "v4.2.9.32-experience-profile"
+APP_VERSION = "v4.2.9.33"
+EXPERIENCE_PROFILE_VERSION = "v4.2.9.33-experience-profile"
 
 
 BORMASH_LIMITS = {
@@ -550,6 +550,9 @@ class ProcessSettings:
     # Всегда M68: номер слоя не технологическая величина, синхронизация с движением
     # не нужна, а M67 требует непройденного HAL-кита.
     emit_layer_number_e4: bool = False
+    # Убирать M67/M68, повторяющие уже установленное значение канала. Каждая такая
+    # команда рвёт сглаживание G64, не меняя ничего физически.
+    dedupe_analog_setpoints: bool = True
     # Оценка времени с учётом разгона/торможения осей (ускорения из ebam.ini).
     # Выключение возвращает прежнюю идеальную оценку «путь/скорость».
     estimate_time_with_acceleration: bool = True
@@ -1075,6 +1078,44 @@ def rotational_layer_radii_at_z(z: float, params: Dict[str, Any], settings: Proc
     return cleaned
 
 
+def rotational_layer_path_length_mm(z: float, params: Dict[str, Any], settings: ProcessSettings,
+                                    strategy: str) -> float:
+    """Длина траектории одного ротационного слоя, мм — по той же геометрии, что кладёт генератор.
+
+    Оценщик времени обязан считать путь ровно так же, как генератор: расхождение
+    между ними один раз уже стоило файла на 134 часа, показанного как 5.5 ч
+    (v4.2.9.20). Поэтому кольца берутся из `rotational_layer_radii_at_z`, а
+    спираль — по тем же r_start/r_end/turns, что и `rotational_spiral_segments_at_z`.
+
+    Оценка по объёму детали здесь не работает: на тонкой стенке генератор всё равно
+    кладёт кольцо шириной в радиальный шаг, поэтому реальный путь длиннее, чем
+    «объём / сечение валика» — на стенке 2 мм при шаге 2.35 мм это занижало время
+    вдвое.
+    """
+    strat = str(strategy or "").strip().lower()
+    if strat in ("spiral", "xy_spiral", "stl_xy_spiral", "mesh_xy_spiral"):
+        # Архимедова спираль: длина = число витков * средняя окружность. Совпадает с
+        # суммой хорд генератора (проверено на стенках 2/3/6/20 мм), но без выборки
+        # тысяч точек — оценка должна оставаться быстрой.
+        ro = max(rotational_shell_outer_radius(z, params), 0.05)
+        ri = max(rotational_shell_inner_radius(z, params), 0.0)
+        pitch = max(_effective_rotational_radial_step(settings), 0.1)
+        r_start = max(ri + pitch * 0.35, 0.35 if ri <= 0.05 else ri + 0.05)
+        r_end = max(ro - pitch * 0.35, r_start + 0.1)
+        turns = max(1.0, max(r_end - r_start, 0.1) / pitch)
+        return turns * math.pi * (r_start + r_end)
+    # Концентрические кольца: сумма окружностей по фактическим радиусам слоя.
+    return sum(2.0 * math.pi * float(r) for r in rotational_layer_radii_at_z(z, params, settings))
+
+
+def rotational_total_path_length_mm(params: Dict[str, Any], settings: ProcessSettings,
+                                    strategy: str, n_layers: int) -> float:
+    """Полная длина траектории детали, мм — сумма по слоям на их средней высоте."""
+    lh = max(float(getattr(settings, "layer_height", 0.0)), 1e-9)
+    return sum(rotational_layer_path_length_mm((i + 0.5) * lh, params, settings, strategy)
+               for i in range(max(int(n_layers), 0)))
+
+
 def _section_radii_from_polygons_for_rotary_c(polys: List[Polygon], center_xy: Tuple[float, float], settings: ProcessSettings) -> Tuple[List[float], Dict[str, float]]:
     """Approximate an arbitrary STL horizontal section by C-table circular radii.
 
@@ -1274,6 +1315,7 @@ def _generate_mesh_rotary_c(mesh_n: trimesh.Trimesh, stats: Dict[str, Any], sett
         warnings.append(f"WARNING: STL sections are not very round (estimated spread up to {max_roundness_pct:.1f}%). C-table circular approximation may not match the STL shape.")
     footer_settings = replace(effective_settings, safe_z_final_mm=max(effective_settings.safe_z_final_mm, height + effective_settings.z_hop_mm + 5.0))
     lines.extend(_gcode_footer(footer_settings))
+    lines = drop_redundant_analog_setpoints(lines, effective_settings)
     gcode = "\n".join(lines) + "\n"
     audit = audit_gcode(gcode, effective_settings)
     out_stats = dict(stats)
@@ -2129,6 +2171,7 @@ def _generate_rotational_shell_rotary_c_no_pause(params: Dict[str, Any], setting
     lines.append("M68 E0 Q0.000 (beam current OFF at final end only)")
     footer_settings = replace(effective_settings, safe_z_final_mm=max(effective_settings.safe_z_final_mm, height + 5.0))
     lines.extend(_gcode_footer(footer_settings))
+    lines = drop_redundant_analog_setpoints(lines, effective_settings)
     gcode = "\n".join(lines) + "\n"
     audit = audit_gcode(gcode, effective_settings)
     if thermal_dwell_count:
@@ -2350,6 +2393,7 @@ def _generate_rotational_shell_rotary_c(params: Dict[str, Any], settings: Proces
         warnings.append(f"WARNING: {small_radius_count} rotary C passes use radius below configured warning radius {effective_settings.rotary_c_min_radius_mm:.3f} mm.")
     footer_settings = replace(effective_settings, safe_z_final_mm=max(effective_settings.safe_z_final_mm, height + effective_settings.z_hop_mm + 5.0))
     lines.extend(_gcode_footer(footer_settings))
+    lines = drop_redundant_analog_setpoints(lines, effective_settings)
     gcode = "\n".join(lines) + "\n"
     audit = audit_gcode(gcode, effective_settings)
     stats.update({
@@ -2505,6 +2549,7 @@ def _generate_rotational_shell_ring_spiral(params: Dict[str, Any], settings: Pro
                                 f"(мин. цикл слоя {float(getattr(effective_settings, 'thermal_min_layer_cycle_min', 0.0)):.1f} мин); время включено в G-code (G4).")
     footer_settings = replace(effective_settings, safe_z_final_mm=max(effective_settings.safe_z_final_mm, height + effective_settings.z_hop_mm + 5.0))
     lines.extend(_gcode_footer(footer_settings))
+    lines = drop_redundant_analog_setpoints(lines, effective_settings)
     gcode = "\n".join(lines) + "\n"
     audit = audit_gcode(gcode, effective_settings)
     stats.update({
@@ -3440,6 +3485,36 @@ def layers_active_time_s(layer_infos: Iterable["LayerInfo"], settings: ProcessSe
     return sum(layer_active_time_s(li, settings) for li in layer_infos)
 
 
+_ANALOG_SETPOINT_RE = re.compile(r"^\s*(M6[78])\s+E(\d+)\s+Q(-?\d+(?:\.\d+)?)\s*(\(.*\))?\s*$")
+
+
+def drop_redundant_analog_setpoints(lines: List[str], settings: ProcessSettings) -> List[str]:
+    """Убрать M67/M68, повторно задающие каналу уже установленное значение.
+
+    Каждая такая команда — queue buster: планировщик LinuxCNC вынужден
+    синхронизироваться и разорвать сглаживание G64, хотя значение пина не меняется.
+    Физика не затрагивается: пин остаётся тем же, удаляются только повторы.
+
+    Заметно на настройках без мягкого старта (soft_wire_factor = 1.0): там подряд
+    идут три одинаковые уставки на сегмент, и до половины всех M68 в программе
+    оказываются пустыми разрывами сглаживания.
+    """
+    if not bool(getattr(settings, "dedupe_analog_setpoints", True)):
+        return lines
+    out: List[str] = []
+    last: Dict[str, float] = {}
+    for ln in lines:
+        m = _ANALOG_SETPOINT_RE.match(ln)
+        if m:
+            channel, value = m.group(2), float(m.group(3))
+            prev = last.get(channel)
+            if prev is not None and abs(prev - value) <= 1e-9:
+                continue  # значение уже стоит на канале — команда ничего не меняет
+            last[channel] = value
+        out.append(ln)
+    return out
+
+
 def _layer_number_lines(settings: ProcessSettings, layer_index: int, layers_total: int = 0) -> List[str]:
     """Строка M68 E4 с номером слоя — если канал включён в настройках.
 
@@ -4371,6 +4446,7 @@ def _generate_special_paths_from_polygon_provider(
         warnings.append(f"WARNING: sections are not very round (estimated spread up to {max_roundness_pct:.1f}%). Circular/spiral approximation may not match the exact shape.")
     footer_settings = replace(effective_settings, safe_z_final_mm=max(effective_settings.safe_z_final_mm, height + effective_settings.z_hop_mm + 5.0))
     lines.extend(_gcode_footer(footer_settings))
+    lines = drop_redundant_analog_setpoints(lines, effective_settings)
     gcode = "\n".join(lines) + "\n"
     audit = audit_gcode(gcode, effective_settings)
     out_stats = dict(stats)
@@ -4651,6 +4727,7 @@ def _generate_with_polygon_provider(provider: Callable[[float], List[Polygon]], 
 
     footer_settings = replace(settings, safe_z_final_mm=max(settings.safe_z_final_mm, height + settings.z_hop_mm + 5.0))
     lines.extend(_gcode_footer(footer_settings))
+    lines = drop_redundant_analog_setpoints(lines, settings)
     gcode = "\n".join(lines) + "\n"
     audit = audit_gcode(gcode, settings)
 
